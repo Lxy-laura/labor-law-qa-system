@@ -1,0 +1,45 @@
+# ========== 劳动合同纠纷智能问答系统 - Python 依赖（简化版）==========
+
+# Web 框架
+fastapi==0.109.0
+uvicorn==0.27.0
+python-multipart==0.0.6
+
+# BM25 关键词检索
+rank-bm25==0.2.2
+
+# 向量模型 & Cross-Encoder 重排序
+sentence-transformers==2.3.1
+
+# DeepSeek API（使用 openai SDK）
+openai==1.12.0
+
+# JWT 认证
+PyJWT==2.8.0
+
+# 文档解析（可选，上传 PDF/Word 时需要）
+python-docx==1.1.0
+PyMuPDF==1.23.8
+
+# HTML 解析
+beautifulsoup4==4.12.3
+
+# 环境变量管理
+python-dotenv==1.0.0
+
+# 数据模型
+pydantic==2.5.3
+
+# 数值计算
+numpy==1.26.3
+
+# ========== 以下为可选依赖（高级功能，不装也能运行）==========
+# LoRA 微调（运行训练脚本时需要）
+# peft==0.7.2
+
+# Milvus 向量数据库（不装则自动降级为 BM25 检索）
+# pymilvus==2.3.6
+
+# LangChain（高级 RAG 编排，当前版本未直接使用）
+# langchain==0.1.4
+# langchain-community==0.0.16

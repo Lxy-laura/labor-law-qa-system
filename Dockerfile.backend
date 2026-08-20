@@ -1,0 +1,51 @@
+# ============================================================
+# 劳动合同纠纷智能问答系统 - 后端 Dockerfile
+# 基于 Python 3.11 构建 FastAPI 后端服务
+# ============================================================
+
+FROM python:3.11-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量（优化 Python 运行环境）
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    TZ=Asia/Shanghai \
+    PIP_NO_CACHE_DIR=1
+
+# 安装系统依赖
+# - libgomp1: OpenMP（PyTorch/scikit-learn 依赖）
+# - libglib2.0-0, libsm6, libxext6, libxrender1: 图形库（部分数据处理依赖）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制依赖文件
+COPY requirements-backend.txt .
+
+# 安装 Python 依赖
+RUN pip install --no-cache-dir -r requirements-backend.txt
+
+# 复制项目文件
+COPY . /app/
+
+# 创建数据目录和模型目录
+RUN mkdir -p /app/data /app/models /app/logs
+
+# 暴露端口
+EXPOSE 8000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# 启动命令
+# 先初始化数据库，然后启动 FastAPI 服务
+CMD ["sh", "-c", "python scripts/init_db.py && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4"]
