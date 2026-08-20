@@ -52,6 +52,18 @@ export function deleteConversation(conversationId) {
 }
 
 /**
+ * 重新生成历史对话的回答（用当前已配置的 API Key）
+ * @param {number} conversationId
+ * @returns {Promise}
+ */
+export function regenerateAnswer(conversationId) {
+  return request({
+    url: `/qa/conversations/${conversationId}/regenerate`,
+    method: 'post'
+  })
+}
+
+/**
  * 新建对话
  * @returns {Promise} - { conversationId }
  */
@@ -59,5 +71,41 @@ export function createConversation() {
   return request({
     url: '/qa/conversations',
     method: 'post'
+  })
+}
+
+/**
+ * 切换收藏状态
+ * @param {number} conversationId
+ * @returns {Promise}
+ */
+export function toggleFavoriteApi(conversationId) {
+  return request({
+    url: `/qa/conversations/${conversationId}/favorite`,
+    method: 'post'
+  })
+}
+
+/**
+ * 获取收藏列表
+ * @returns {Promise}
+ */
+export function getFavorites() {
+  return request({
+    url: '/qa/favorites',
+    method: 'get'
+  })
+}
+
+/**
+ * 获取用户反馈列表（管理员）
+ * @param {Object} params - { rating, page, pageSize }
+ * @returns {Promise}
+ */
+export function getFeedbackList(params) {
+  return request({
+    url: '/qa/feedback',
+    method: 'get',
+    params
   })
 }

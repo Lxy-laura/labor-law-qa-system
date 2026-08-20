@@ -18,13 +18,11 @@ logger = logging.getLogger(__name__)
 # SQLite 数据库文件路径
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labor_law.db")
 
-
 def get_connection():
     """获取 SQLite 数据库连接"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row  # 使查询结果可以通过列名访问
     return conn
-
 
 def get_db():
     """
@@ -36,7 +34,6 @@ def get_db():
         yield conn
     finally:
         conn.close()
-
 
 def init_db():
     """
@@ -81,9 +78,17 @@ def init_db():
             answer          TEXT NOT NULL,
             citations       TEXT,
             confidence      REAL,
+            is_favorited    INTEGER DEFAULT 0,
             created_at      TEXT DEFAULT (datetime('now', 'localtime'))
         );
     """)
+
+    # 兼容旧数据库：如果 is_favorited 列不存在则添加
+    try:
+        cur.execute("SELECT is_favorited FROM chat_history LIMIT 1")
+    except Exception:
+        cur.execute("ALTER TABLE chat_history ADD COLUMN is_favorited INTEGER DEFAULT 0")
+        logger.info("已为 chat_history 表添加 is_favorited 列")
 
     # ========== 4. 反馈表 ==========
     cur.execute("""
@@ -117,7 +122,6 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_judge_records_user_id ON judge_records(user_id);")
 
     conn.commit()
-
     # ========== 创建默认管理员账号 ==========
     from auth.jwt_handler import hash_password
     cur.execute("SELECT id FROM users WHERE username = 'admin'")
@@ -132,6 +136,14 @@ def init_db():
         )
         conn.commit()
         logger.info("默认账号已创建: admin/admin123 (管理员), testuser/123456 (普通用户)")
+
+    # ========== 确保管理员角色正确（兼容旧数据库）==========
+    cur.execute("SELECT role FROM users WHERE username = 'admin'")
+    admin_row = cur.fetchone()
+    if admin_row and admin_row["role"] != "admin":
+        cur.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+        conn.commit()
+        logger.info("已修正 admin 用户角色为管理员")
 
     cur.close()
     conn.close()

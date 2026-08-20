@@ -49,18 +49,20 @@
 <script setup>
 /**
  * 侧边栏组件
- * 根据 role 动态显示菜单（普通用户仅问答与研判，管理员可见全部）
+ * 根据 role 动态显示菜单（普通用户可见问答/历史/收藏，管理员可见全部）
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
 import {
   ChatLineRound,
-  DocumentChecked,
   Files,
   DataAnalysis,
   Connection,
-  ScaleToOriginal
+  ScaleToOriginal,
+  Clock,
+  Star,
+  ChatDotRound
 } from '@element-plus/icons-vue'
 
 defineProps({
@@ -74,10 +76,12 @@ const userStore = useUserStore()
 // 完整菜单列表
 const allMenus = [
   { path: '/qa', label: '智能问答', icon: ChatLineRound, requireAdmin: false },
-  { path: '/judge', label: '信息研判', icon: DocumentChecked, requireAdmin: false },
+  { path: '/history', label: '提问历史', icon: Clock, requireAdmin: false },
+  { path: '/favorites', label: '我的收藏', icon: Star, requireAdmin: false },
   { path: '/knowledge-base', label: '知识库管理', icon: Files, requireAdmin: true },
-  { path: '/retrieval-viz', label: '检索可视化', icon: Connection, requireAdmin: true },
-  { path: '/analytics', label: '数据分析', icon: DataAnalysis, requireAdmin: true }
+  { path: '/analytics', label: '数据分析', icon: DataAnalysis, requireAdmin: true },
+  { path: '/retrieval-viz', label: '检索调试', icon: Connection, requireAdmin: true },
+  { path: '/feedback', label: '用户反馈', icon: ChatDotRound, requireAdmin: true }
 ]
 
 // 根据角色过滤可见菜单

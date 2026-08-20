@@ -31,22 +31,40 @@ const routes = [
         meta: { title: '信息研判' }
       },
       {
+        path: 'history',
+        name: 'History',
+        component: () => import('../views/HistoryView.vue'),
+        meta: { title: '提问历史' }
+      },
+      {
+        path: 'favorites',
+        name: 'Favorites',
+        component: () => import('../views/FavoritesView.vue'),
+        meta: { title: '我的收藏' }
+      },
+      {
         path: 'knowledge-base',
         name: 'KnowledgeBase',
         component: () => import('../views/KnowledgeBase.vue'),
         meta: { title: '知识库管理', requireAdmin: true }
       },
       {
-        path: 'retrieval-viz',
-        name: 'RetrievalViz',
-        component: () => import('../views/RetrievalViz.vue'),
-        meta: { title: '检索可视化', requireAdmin: true }
-      },
-      {
         path: 'analytics',
         name: 'Analytics',
         component: () => import('../views/Analytics.vue'),
         meta: { title: '数据分析', requireAdmin: true }
+      },
+      {
+        path: 'retrieval-viz',
+        name: 'RetrievalViz',
+        component: () => import('../views/RetrievalViz.vue'),
+        meta: { title: '检索调试', requireAdmin: true }
+      },
+      {
+        path: 'feedback',
+        name: 'Feedback',
+        component: () => import('../views/FeedbackView.vue'),
+        meta: { title: '用户反馈', requireAdmin: true }
       }
     ]
   },

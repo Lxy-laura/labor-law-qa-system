@@ -258,6 +258,7 @@
  * AI 回答后展示：引用溯源、相似案例、落地服务（12333/12348电话+行动指引）
  */
 import { ref, reactive, nextTick, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus,
@@ -283,6 +284,7 @@ const currentConvId = ref('')
 const currentSources = ref([])
 const caseDialogVisible = ref(false)
 const currentCase = ref(null)
+const route = useRoute()
 
 // 对话历史
 const conversations = ref([])
@@ -301,16 +303,23 @@ const suggestedQuestions = [
 // 消息自增 ID
 let msgId = 0
 
-onMounted(() => {
-  loadConversations()
+onMounted(async () => {
+  await loadConversations()
+  // 如果从历史/收藏页面跳转来且携带了问题参数，自动填入并发送
+  const q = route.query.q
+  if (q) {
+    inputText.value = q
+    await nextTick()
+    handleSend()
+  }
 })
 
 // 加载对话列表
-async function loadConversations() {
+async function loadConversations(selectFirst = true) {
   try {
     const res = await getConversations()
     conversations.value = res.list || res || []
-    if (conversations.value.length > 0) {
+    if (selectFirst && conversations.value.length > 0) {
       selectConversation(conversations.value[0].id)
     }
   } catch (e) {
@@ -329,12 +338,34 @@ function newConversation() {
   })
 }
 
-// 选择对话
+// 选择对话 - 加载历史消息
 function selectConversation(id) {
   currentConvId.value = id
-  messages.value = []
-  currentSources.value = []
-  // TODO: 加载历史消息
+  const conv = conversations.value.find((c) => c.id === id)
+  if (conv) {
+    // 重建消息列表：用户问题 + AI 回答
+    messages.value = [
+      {
+        id: ++msgId,
+        role: 'user',
+        content: conv.question
+      },
+      {
+        id: ++msgId,
+        role: 'assistant',
+        content: conv.answer,
+        loading: false,
+        sources: [],
+        similarCases: [],
+        services: null
+      }
+    ]
+    currentSources.value = []
+    scrollToBottom()
+  } else {
+    messages.value = []
+    currentSources.value = []
+  }
 }
 
 // 删除对话
@@ -401,14 +432,18 @@ async function handleSend(e) {
     const res = await askQuestion({ question: text, conversationId: currentConvId.value })
     aiMsg.loading = false
     aiMsg.content = res.answer
-    aiMsg.sources = res.sources || []
-    aiMsg.similarCases = res.similarCases || []
-    aiMsg.services = res.services || null
+    // 后端字段映射：citations -> sources, cases -> similarCases, landing_services -> services
+    aiMsg.sources = res.sources || res.citations || []
+    aiMsg.similarCases = res.similarCases || res.cases || []
+    aiMsg.services = res.services || res.landing_services || null
 
     // 更新右侧引用
     if (aiMsg.sources.length) {
       currentSources.value = aiMsg.sources
     }
+
+    // 重新加载对话列表（不切换当前选中的对话，保留引用来源等展示）
+    loadConversations(false)
 
     await scrollToBottom()
   } catch (error) {

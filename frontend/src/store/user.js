@@ -1,9 +1,9 @@
 /**
  * Pinia 用户状态管理
- * 管理 token、role、username，提供 login / logout 方法
+ * 管理 token、role、username，提供 login / logout / fetchUserInfo 方法
  */
 import { defineStore } from 'pinia'
-import { login as loginApi, register as registerApi } from '../api/auth'
+import { login as loginApi, register as registerApi, getUserInfo } from '../api/auth'
 
 export const useUserStore = defineStore('user', {
   state: () => ({
@@ -27,10 +27,12 @@ export const useUserStore = defineStore('user', {
      */
     async login(username, password) {
       const res = await loginApi({ username, password })
-      this.token = res.token
       this.token = res.access_token
+      this.role = res.role
       this.username = res.username
       this._persist()
+      // 登录后立即从服务端同步角色，确保 role 正确
+      await this.fetchUserInfo()
       return res
     },
 
@@ -40,6 +42,27 @@ export const useUserStore = defineStore('user', {
     async register(username, password) {
       const res = await registerApi({ username, password })
       return res
+    },
+
+    /**
+     * 从服务端获取用户信息，同步角色状态
+     * 用于应用启动时校正 localStorage 中可能残留的旧角色
+     */
+    async fetchUserInfo() {
+      if (!this.token) return
+      try {
+        const info = await getUserInfo()
+        if (info.role) {
+          this.role = info.role
+          this.username = info.username
+          this._persist()
+        }
+      } catch (e) {
+        // Token 无效或过期，清除本地状态
+        if (e.response && e.response.status === 401) {
+          this.logout()
+        }
+      }
     },
 
     /**

@@ -8,16 +8,7 @@
         <p class="text-sm text-gray-400 mt-1">系统运行数据统计与分析</p>
       </div>
       <div class="flex items-center gap-2">
-        <el-date-picker
-          v-model="dateRange"
-          type="daterange"
-          range-separator="至"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          class="!w-64"
-          @change="loadAll"
-        />
-        <el-button :icon="Refresh" @click="loadAll">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
       </div>
     </div>
 
@@ -31,9 +22,6 @@
         <div>
           <div class="text-2xl font-bold text-gray-800">{{ item.value }}</div>
           <div class="text-xs text-gray-400 mt-0.5">{{ item.label }}</div>
-          <div class="text-xs mt-0.5" :class="item.trend > 0 ? 'text-green-500' : 'text-red-500'">
-            {{ item.trend > 0 ? '+' : '' }}{{ item.trend }}% 较上周
-          </div>
         </div>
       </div>
     </div>
@@ -50,6 +38,7 @@
           <el-tag size="small" effect="plain">近30天</el-tag>
         </div>
         <div ref="trendChartRef" style="height: 280px;"></div>
+        <div v-if="trendEmpty" class="text-center text-sm text-gray-400 py-8">暂无问答数据</div>
       </div>
 
       <!-- 图表2：问题分类分布 -->
@@ -62,6 +51,7 @@
           <el-tag size="small" effect="plain">按法律领域</el-tag>
         </div>
         <div ref="categoryChartRef" style="height: 280px;"></div>
+        <div v-if="categoryEmpty" class="text-center text-sm text-gray-400 py-8">暂无分类数据</div>
       </div>
 
       <!-- 图表3：用户活跃度 -->
@@ -74,6 +64,7 @@
           <el-tag size="small" effect="plain">按时段</el-tag>
         </div>
         <div ref="activityChartRef" style="height: 280px;"></div>
+        <div v-if="activityEmpty" class="text-center text-sm text-gray-400 py-8">暂无活跃度数据</div>
       </div>
 
       <!-- 图表4：检索质量指标 -->
@@ -86,6 +77,7 @@
           <el-tag size="small" effect="plain">多维度评估</el-tag>
         </div>
         <div ref="qualityChartRef" style="height: 280px;"></div>
+        <div v-if="qualityEmpty" class="text-center text-sm text-gray-400 py-8">暂无质量指标数据</div>
       </div>
     </div>
   </div>
@@ -94,22 +86,19 @@
 <script setup>
 /**
  * 数据分析页面
+ * 所有数据均从后端接口实时获取，不使用任何写死的模拟数据
  * 四宫格图表：问答趋势 + 问题分类分布 + 用户活跃度 + 检索质量指标
- * 使用 ECharts 渲染
  */
-import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import {
-  Refresh,
-  TrendCharts,
-  PieChart,
-  Histogram,
-  DataLine,
-  ChatLineRound,
-  User,
-  Document
+  Refresh, TrendCharts, PieChart, Histogram, DataLine,
+  ChatLineRound, User, Document
 } from '@element-plus/icons-vue'
-import { getAnalytics } from '../api/analytics'
+import {
+  getAnalytics, getQaTrend, getHotCategories,
+  getUserActivity, getRetrievalMetrics
+} from '../api/analytics'
 
 // 图表 DOM 引用
 const trendChartRef = ref(null)
@@ -123,14 +112,20 @@ let categoryChart = null
 let activityChart = null
 let qualityChart = null
 
-const dateRange = ref([])
+const loading = ref(false)
 
-// 概览统计
+// 空数据提示
+const trendEmpty = ref(false)
+const categoryEmpty = ref(false)
+const activityEmpty = ref(false)
+const qualityEmpty = ref(false)
+
+// 概览统计（初始为 -- 占位，从后端获取后填充）
 const overviewStats = ref([
-  { label: '累计问答数', value: '12,586', trend: 12.5, icon: ChatLineRound, bgClass: 'bg-primary-50', color: '#4F46E5' },
-  { label: '活跃用户数', value: '3,247', trend: 8.3, icon: User, bgClass: 'bg-secondary-50', color: '#06B6D4' },
-  { label: '知识库文档', value: '856', trend: 3.2, icon: Document, bgClass: 'bg-green-50', color: '#10B981' },
-  { label: '平均响应时间', value: '1.3s', trend: -5.6, icon: DataLine, bgClass: 'bg-amber-50', color: '#F59E0B' }
+  { label: '累计问答数', value: '--', icon: ChatLineRound, bgClass: 'bg-primary-50', color: '#4F46E5' },
+  { label: '活跃用户数', value: '--', icon: User, bgClass: 'bg-secondary-50', color: '#06B6D4' },
+  { label: '知识库文档', value: '--', icon: Document, bgClass: 'bg-green-50', color: '#10B981' },
+  { label: '研判总数', value: '--', icon: DataLine, bgClass: 'bg-amber-50', color: '#F59E0B' }
 ])
 
 onMounted(() => {
@@ -165,123 +160,138 @@ function initCharts() {
   qualityChart = echarts.init(qualityChartRef.value)
 }
 
-// 加载所有数据
+// 加载所有数据（全部从后端实时获取）
 async function loadAll() {
-  // 尝试从后端获取数据，失败则使用模拟数据
+  loading.value = true
+  try {
+    await Promise.all([
+      loadOverview(),
+      loadTrend(),
+      loadCategories(),
+      loadActivity(),
+      loadQuality()
+    ])
+  } catch (e) {
+    // 已在各自函数中处理错误
+  } finally {
+    loading.value = false
+  }
+}
+
+// 加载概览数据
+async function loadOverview() {
   try {
     const res = await getAnalytics()
     if (res) {
-      updateOverview(res)
-      renderTrendChart(res.trend)
-      renderCategoryChart(res.categories)
-      renderActivityChart(res.activity)
-      renderQualityChart(res.quality)
-      return
+      overviewStats.value[0].value = res.totalQuestions?.toLocaleString() || '0'
+      overviewStats.value[1].value = res.totalUsers?.toLocaleString() || '0'
+      overviewStats.value[2].value = res.totalDocuments?.toString() || '0'
+      overviewStats.value[3].value = res.totalJudgments?.toString() || '0'
     }
   } catch (e) {
-    // 使用模拟数据
+    overviewStats.value.forEach(s => s.value = '0')
   }
-
-  // 模拟数据
-  renderTrendChart()
-  renderCategoryChart()
-  renderActivityChart()
-  renderQualityChart()
 }
 
-// 更新概览
-function updateOverview(data) {
-  if (!data) return
-  overviewStats.value[0].value = data.totalQuestions?.toLocaleString() || overviewStats.value[0].value
-  overviewStats.value[1].value = data.totalUsers?.toLocaleString() || overviewStats.value[1].value
-  overviewStats.value[2].value = data.totalDocuments?.toString() || overviewStats.value[2].value
-  overviewStats.value[3].value = data.avgResponseTime || overviewStats.value[3].value
+// 加载问答趋势
+async function loadTrend() {
+  try {
+    const res = await getQaTrend({ days: 30 })
+    const dates = res.dates || []
+    const questions = res.questions || []
+    const users = res.users || []
+
+    if (dates.length === 0) {
+      trendEmpty.value = true
+      trendChart?.setOption({ series: [] })
+      return
+    }
+    trendEmpty.value = false
+
+    trendChart?.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { data: ['提问数', '活跃用户'], bottom: 0 },
+      grid: { top: 20, left: 50, right: 20, bottom: 40 },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, interval: Math.ceil(dates.length / 8) } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
+      series: [
+        {
+          name: '提问数', type: 'line', smooth: true, data: questions,
+          itemStyle: { color: '#4F46E5' },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(79, 70, 229, 0.25)' },
+            { offset: 1, color: 'rgba(79, 70, 229, 0.01)' }
+          ]) }
+        },
+        {
+          name: '活跃用户', type: 'line', smooth: true, data: users,
+          itemStyle: { color: '#06B6D4' },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(6, 182, 212, 0.25)' },
+            { offset: 1, color: 'rgba(6, 182, 212, 0.01)' }
+          ]) }
+        }
+      ]
+    })
+  } catch (e) {
+    trendEmpty.value = true
+    trendChart?.setOption({ series: [] })
+  }
 }
 
-// 图表1：问答趋势（折线图）
-function renderTrendChart(data) {
-  const days = Array.from({ length: 30 }, (_, i) => `${i + 1}日`)
-  const questions = data?.questions || Array.from({ length: 30 }, () => Math.floor(Math.random() * 200 + 100))
-  const users = data?.users || Array.from({ length: 30 }, () => Math.floor(Math.random() * 80 + 20))
+// 加载问题分类
+async function loadCategories() {
+  try {
+    const res = await getHotCategories()
+    const data = res || []
 
-  trendChart?.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['提问数', '活跃用户'], bottom: 0 },
-    grid: { top: 20, left: 50, right: 20, bottom: 40 },
-    xAxis: { type: 'category', data: days, axisLabel: { fontSize: 10, interval: 4 } },
-    yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
-    series: [
-      {
-        name: '提问数',
-        type: 'line',
-        smooth: true,
-        data: questions,
-        itemStyle: { color: '#4F46E5' },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(79, 70, 229, 0.25)' },
-          { offset: 1, color: 'rgba(79, 70, 229, 0.01)' }
-        ]) }
-      },
-      {
-        name: '活跃用户',
-        type: 'line',
-        smooth: true,
-        data: users,
-        itemStyle: { color: '#06B6D4' },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(6, 182, 212, 0.25)' },
-          { offset: 1, color: 'rgba(6, 182, 212, 0.01)' }
-        ]) }
-      }
-    ]
-  })
-}
+    if (!data.length || data.every(d => d.value === 0)) {
+      categoryEmpty.value = true
+      categoryChart?.setOption({ series: [] })
+      return
+    }
+    categoryEmpty.value = false
 
-// 图表2：问题分类分布（饼图）
-function renderCategoryChart(data) {
-  const categoryData = data || [
-    { name: '工资报酬', value: 3580 },
-    { name: '解除终止', value: 2940 },
-    { name: '社保公积金', value: 2100 },
-    { name: '工时休假', value: 1560 },
-    { name: '调岗调薪', value: 1280 },
-    { name: '其他', value: 1126 }
-  ]
-
-  categoryChart?.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, type: 'scroll', fontSize: 10 },
-    series: [
-      {
-        type: 'pie',
-        radius: ['40%', '70%'],
-        center: ['50%', '45%'],
+    categoryChart?.setOption({
+      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+      legend: { bottom: 0, type: 'scroll', fontSize: 10 },
+      series: [{
+        type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
         avoidLabelOverlap: false,
         itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
         label: { show: false },
         emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } },
-        data: categoryData,
+        data: data,
         color: ['#4F46E5', '#06B6D4', '#818CF8', '#22D3EE', '#A5B4FC', '#67E8F9']
-      }
-    ]
-  })
+      }]
+    })
+  } catch (e) {
+    categoryEmpty.value = true
+    categoryChart?.setOption({ series: [] })
+  }
 }
 
-// 图表3：用户活跃度（柱状图）
-function renderActivityChart(data) {
-  const hours = ['0-2', '2-4', '4-6', '6-8', '8-10', '10-12', '12-14', '14-16', '16-18', '18-20', '20-22', '22-24']
-  const counts = data || [15, 8, 5, 30, 180, 350, 220, 310, 280, 400, 250, 80]
+// 加载用户活跃度
+async function loadActivity() {
+  try {
+    const res = await getUserActivity()
+    const labels = res.labels || ['0-2','2-4','4-6','6-8','8-10','10-12','12-14','14-16','16-18','18-20','20-22','22-24']
+    const counts = res.counts || []
 
-  activityChart?.setOption({
-    tooltip: { trigger: 'axis' },
-    grid: { top: 20, left: 50, right: 20, bottom: 30 },
-    xAxis: { type: 'category', data: hours, axisLabel: { fontSize: 10 } },
-    yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
-    series: [
-      {
-        type: 'bar',
-        data: counts,
-        barWidth: '60%',
+    if (counts.length === 0 || counts.every(c => c === 0)) {
+      activityEmpty.value = true
+      activityChart?.setOption({ series: [] })
+      return
+    }
+    activityEmpty.value = false
+
+    activityChart?.setOption({
+      tooltip: { trigger: 'axis' },
+      grid: { top: 20, left: 50, right: 20, bottom: 30 },
+      xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 10 } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
+      series: [{
+        type: 'bar', data: counts, barWidth: '60%',
         itemStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: '#4F46E5' },
@@ -289,44 +299,51 @@ function renderActivityChart(data) {
           ]),
           borderRadius: [4, 4, 0, 0]
         }
-      }
-    ]
-  })
+      }]
+    })
+  } catch (e) {
+    activityEmpty.value = true
+    activityChart?.setOption({ series: [] })
+  }
 }
 
-// 图表4：检索质量指标（雷达图）
-function renderQualityChart(data) {
-  const radarData = data || [85, 78, 92, 88, 76, 90]
+// 加载检索质量指标
+async function loadQuality() {
+  try {
+    const res = await getRetrievalMetrics()
+    const indicators = res.indicators || []
 
-  qualityChart?.setOption({
-    tooltip: {},
-    radar: {
-      indicator: [
-        { name: '召回率', max: 100 },
-        { name: '准确率', max: 100 },
-        { name: '响应速度', max: 100 },
-        { name: '答案相关度', max: 100 },
-        { name: '引用准确率', max: 100 },
-        { name: '用户满意度', max: 100 }
-      ],
-      radius: '65%',
-      axisName: { fontSize: 11, color: '#6b7280' }
-    },
-    series: [
-      {
+    if (indicators.length === 0) {
+      qualityEmpty.value = true
+      qualityChart?.setOption({ series: [] })
+      return
+    }
+    qualityEmpty.value = false
+
+    const names = indicators.map(i => i.name)
+    const values = indicators.map(i => i.value)
+
+    qualityChart?.setOption({
+      tooltip: {},
+      radar: {
+        indicator: names.map(n => ({ name: n, max: 100 })),
+        radius: '65%',
+        axisName: { fontSize: 11, color: '#6b7280' }
+      },
+      series: [{
         type: 'radar',
-        data: [
-          {
-            value: radarData,
-            name: '检索质量',
-            areaStyle: { color: 'rgba(79, 70, 229, 0.2)' },
-            lineStyle: { color: '#4F46E5' },
-            itemStyle: { color: '#4F46E5' }
-          }
-        ]
-      }
-    ]
-  })
+        data: [{
+          value: values, name: '检索质量',
+          areaStyle: { color: 'rgba(79, 70, 229, 0.2)' },
+          lineStyle: { color: '#4F46E5' },
+          itemStyle: { color: '#4F46E5' }
+        }]
+      }]
+    })
+  } catch (e) {
+    qualityEmpty.value = true
+    qualityChart?.setOption({ series: [] })
+  }
 }
 </script>
 

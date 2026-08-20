@@ -8,8 +8,11 @@ import os
 from dotenv import load_dotenv
 
 # 加载 .env 文件中的环境变量
-load_dotenv()
-
+# 明确从 backend 目录加载 .env，确保无论从哪个目录启动都能找到
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(_env_path)
+# 同时也加载工作目录下的 .env（如果存在，不覆盖已加载的值）
+load_dotenv(override=False)
 
 class Config:
     """系统全局配置类，所有配置通过环境变量读取"""
@@ -62,7 +65,6 @@ class Config:
     RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))
     # RRF 融合常数（通常为 60）
     RRF_K = int(os.getenv("RRF_K", "60"))
-
 
 # 全局配置实例
 settings = Config()

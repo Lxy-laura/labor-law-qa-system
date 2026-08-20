@@ -1,292 +1,145 @@
 """
-劳动合同纠纷智能问答系统 - RAG 管线编排
-
-完整 RAG 管线流程：
-1. 术语扩展（SynonymExpander）- 将用户查询扩展为包含同义词的查询
-2. 混合检索（HybridRetriever）- Milvus 向量检索 Top20 + BM25 Top20 → RRF 融合
-3. 重排序（Reranker）- Cross-Encoder 对融合结果重新打分排序
-4. 生成（Generator）- 调用 DeepSeek API 基于重排序结果生成回答
-5. 置信度计算 - 基于重排序分数和检索结果数量计算回答置信度
-6. 落地服务推荐 - 根据问题类型推荐维权热线和行动指引
+RAG 管线编排（简化版）
+- 不需要 torch / sentence_transformers / Milvus
+- 仅使用 BM25 检索
+- 有 API Key 用 DeepSeek，没有则返回法条匹配
 """
-import math
+import json
 import logging
 from typing import List, Dict, Any
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-
 class RAGPipeline:
-    """
-    RAG 管线编排器
-
-    将术语扩展、混合检索、重排序、生成、置信度计算和落地服务推荐
-    有序组合，提供端到端的问答能力
-    """
-
     def __init__(self):
-        """初始化 RAG 管线（延迟加载各组件）"""
-        self._expander = None
-        self._retriever = None
-        self._reranker = None
-        self._generator = None
-        self._landing_service = None
+        self._articles = []
+        self._bm25_index = None
+        self._synonym_dict = {}
+        self._load_data()
 
-    # ========== 延迟加载各组件（使用全局单例）==========
+    def _load_data(self):
+        try:
+            with open(settings.LEGAL_ARTICLES_PATH, "r", encoding="utf-8") as f:
+                self._articles = json.load(f)
+            from rank_bm25 import BM25Okapi
+            tokenized_docs = [list(art["content"]) for art in self._articles]
+            self._bm25_index = BM25Okapi(tokenized_docs)
+            logger.info(f"法条加载成功 {len(self._articles)} 条, BM25 索引构建完成")
+        except Exception as e:
+            logger.warning(f"法条加载失败: {e}")
+            self._articles = []
+            self._bm25_index = None
+        try:
+            with open(settings.SYNONYM_DICT_PATH, "r", encoding="utf-8") as f:
+                self._synonym_dict = json.load(f)
+            logger.info(f"同义词词典加载成功 {len(self._synonym_dict)} 组")
+        except Exception as e:
+            logger.warning(f"同义词词典加载失败: {e}")
+            self._synonym_dict = {}
 
-    @property
-    def expander(self):
-        """同义词扩展器（延迟加载）"""
-        if self._expander is None:
-            from rag.synonym_expander import get_expander
-            self._expander = get_expander()
-        return self._expander
+    def _expand_query(self, query: str) -> str:
+        expanded = []
+        for key, synonyms in self._synonym_dict.items():
+            if key in query:
+                for syn in synonyms:
+                    if syn not in query and syn not in expanded:
+                        expanded.append(syn)
+        if expanded:
+            return f"{query} {' '.join(expanded[:5])}"
+        return query
 
-    @property
-    def retriever(self):
-        """混合检索器（延迟加载）"""
-        if self._retriever is None:
-            from rag.retriever import get_retriever
-            self._retriever = get_retriever()
-        return self._retriever
+    def _bm25_search(self, query: str, top_k: int = 10) -> List[Dict]:
+        if self._bm25_index is None or not self._articles:
+            return []
+        import numpy as np
+        tokenized_query = list(query)
+        scores = self._bm25_index.get_scores(tokenized_query)
+        top_indices = np.argsort(scores)[::-1][:top_k]
+        results = []
+        for idx in top_indices:
+            if scores[idx] <= 0:
+                continue
+            art = self._articles[idx]
+            results.append({
+                "content": art["content"],
+                "law": art.get("law", "劳动合同法"),
+                "article": art.get("article", ""),
+                "title": art.get("title", ""),
+                "category": art.get("category", ""),
+                "score": float(scores[idx]),
+                "rerank_score": float(scores[idx])
+            })
+        return results
 
-    @property
-    def reranker(self):
-        """重排序器（延迟加载）"""
-        if self._reranker is None:
-            from rag.reranker import get_reranker
-            self._reranker = get_reranker()
-        return self._reranker
-
-    @property
-    def generator(self):
-        """回答生成器（延迟加载）"""
-        if self._generator is None:
-            from rag.generator import get_generator
-            self._generator = get_generator()
-        return self._generator
-
-    @property
-    def landing_service(self):
-        """落地服务推荐器（延迟加载）"""
-        if self._landing_service is None:
-            from services.landing import LandingService
-            self._landing_service = LandingService()
-        return self._landing_service
-
-    def run(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        """
-        执行完整 RAG 管线
-
-        参数:
-            query: 用户问题
-            top_k: 最终返回的文档引用数量
-
-        返回:
-            包含以下字段的字典:
-            - answer: 回答文本
-            - citations: 法条引用列表
-            - cases: 案例参考列表
-            - landing_services: 落地服务列表
-            - confidence: 置信度（0-1）
-            - expanded_query: 扩展后的查询
-        """
-        logger.info(f"RAG 管线启动，用户问题: {query}")
-
-        # ========== Step 1: 术语扩展 ==========
-        # 将用户查询扩展为包含同义词的查询，提升检索召回率
-        expanded_query = self.expander.expand(query)
-        logger.info(f"[Step 1] 术语扩展完成: {expanded_query}")
-
-        # ========== Step 2: 混合检索 ==========
-        # 向量检索 Top20 + BM25 Top20 → RRF 融合
-        retrieved_docs = self.retriever.retrieve(expanded_query)
-        logger.info(f"[Step 2] 混合检索完成，获取 {len(retrieved_docs)} 条候选结果")
-
-        # ========== Step 3: 重排序 ==========
-        # Cross-Encoder 对候选结果重新打分排序
-        reranked_docs = self.reranker.rerank(
-            query,
-            retrieved_docs,
-            top_k=max(top_k, settings.RERANK_TOP_K)
-        )
-        logger.info(f"[Step 3] 重排序完成，获取 {len(reranked_docs)} 条精确结果")
-
-        # ========== Step 4: 生成回答 ==========
-        # 调用 DeepSeek API，基于重排序后的法条上下文生成回答
-        answer = self.generator.generate(query, reranked_docs)
-        logger.info(f"[Step 4] 回答生成完成")
-
-        # ========== Step 5: 置信度计算 ==========
-        # 基于重排序分数和检索结果数量计算置信度
-        confidence = self._calculate_confidence(reranked_docs, retrieved_docs)
-        logger.info(f"[Step 5] 置信度: {confidence}")
-
-        # ========== Step 6: 构建法条引用 ==========
-        citations = self._build_citations(reranked_docs[:top_k])
-
-        # ========== Step 7: 案例参考 ==========
-        cases = self._build_cases(query)
-
-        # ========== Step 8: 落地服务推荐 ==========
-        landing_services = self.landing_service.recommend(query)
-
-        # 组装最终结果
-        result = {
-            "answer": answer,
-            "citations": citations,
-            "cases": cases,
-            "landing_services": landing_services,
-            "confidence": confidence,
-            "expanded_query": expanded_query
-        }
-
-        logger.info("RAG 管线执行完成")
-        return result
-
-    def _calculate_confidence(
-        self,
-        reranked_docs: List[Dict],
-        retrieved_docs: List[Dict]
-    ) -> float:
-        """
-        计算回答置信度
-
-        策略:
-        1. 取重排序最高分，使用 sigmoid 归一化到 0-1
-        2. 如果有足够多的检索结果，适当提升置信度
-        3. 限制在合理范围 [0.3, 0.98]
-
-        参数:
-            reranked_docs: 重排序后的文档列表
-            retrieved_docs: 融合检索的文档列表
-
-        返回:
-            置信度（0-1 之间的浮点数）
-        """
-        if not reranked_docs:
-            return 0.3
-
-        # 取重排序最高分
-        max_rerank_score = max([
-            doc.get("rerank_score", 0) for doc in reranked_docs
+    def _generate_answer(self, query: str, contexts: List[Dict]) -> str:
+        context_text = "\n\n".join([
+            f"[{i+1}] {ctx['law']} {ctx['article']}\n{ctx['content']}"
+            for i, ctx in enumerate(contexts)
         ])
-
-        # 使用 sigmoid 归一化（Cross-Encoder 分数范围不固定）
-        confidence = 1.0 / (1.0 + math.exp(-max_rerank_score))
-
-        # 有足够多的检索结果时提升置信度
-        if len(reranked_docs) >= 3:
-            confidence = min(confidence + 0.1, 0.95)
-
-        # 限制在合理范围
-        confidence = max(0.3, min(confidence, 0.98))
-
-        return round(confidence, 4)
-
-    def _build_citations(self, docs: List[Dict]) -> List[Dict[str, Any]]:
-        """
-        构建法条引用列表
-
-        参数:
-            docs: 重排序后的文档列表
-
-        返回:
-            引用列表，每项包含 law, article, content, relevance
-        """
-        citations = []
-        for doc in docs:
-            citations.append({
-                "law": doc.get("law", "劳动合同法"),
-                "article": doc.get("article", ""),
-                "content": doc.get("content", ""),
-                "relevance": round(
-                    doc.get("rerank_score", doc.get("rrf_score", 0)), 4
+        if settings.DEEPSEEK_API_KEY and settings.DEEPSEEK_API_KEY != "your_api_key_here":
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=settings.DEEPSEEK_API_KEY, base_url=settings.DEEPSEEK_BASE_URL)
+                response = client.chat.completions.create(
+                    model=settings.DEEPSEEK_MODEL,
+                    messages=[
+                        {"role": "system", "content": "你是专业劳动合同法律顾问，请基于法条准确回答，引用条文，通俗解释，给出建议。"},
+                        {"role": "user", "content": f"法条参考：\n{context_text}\n\n用户问题：{query}"}
+                    ],
+                    max_tokens=2048,
+                    temperature=0.3,
+                    stream=False
                 )
-            })
-        return citations
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"DeepSeek API 调用失败: {e}")
+        parts = [f"根据您的提问「{query}」，为您检索到以下相关法律条文：\n"]
+        for i, ctx in enumerate(contexts[:5], 1):
+            parts.append(f"{i}. 《{ctx['law']}》{ctx['article']}（{ctx.get('title', '')}）\n   {ctx['content']}\n")
+        parts.append("\n提示：未配置 DeepSeek API Key，以上为法条匹配结果。配置后可获得 AI 智能解读。")
+        return "\n".join(parts)
 
-    def _build_cases(self, query: str) -> List[Dict[str, Any]]:
-        """
-        根据查询内容构建案例参考
-
-        基于查询关键词匹配预设的典型案例模板
-
-        参数:
-            query: 用户查询
-
-        返回:
-            案例列表，每项包含 title, summary, court
-        """
-        cases = []
-
-        # 预设典型案例模板
-        case_templates = [
-            {
-                "title": "张某诉某科技公司违法解除劳动合同案",
-                "summary": "用人单位未依法提前通知即解除劳动合同，"
-                          "法院判决支付双倍经济补偿（赔偿金）。",
-                "court": "北京市海淀区人民法院",
-                "keywords": ["辞退", "解雇", "开除", "解除", "赔偿", "违法"]
-            },
-            {
-                "title": "李某诉某制造公司试用期违法解除案",
-                "summary": "试用期解除劳动合同未证明不符合录用条件，"
-                          "法院认定违法解除，判决支付赔偿金。",
-                "court": "上海市浦东新区人民法院",
-                "keywords": ["试用期", "试用", "转正", "录用条件"]
-            },
-            {
-                "title": "王某诉某服务公司未签订书面劳动合同案",
-                "summary": "用人单位未在一个月内签订书面劳动合同，"
-                          "法院判决支付双倍工资差额。",
-                "court": "广州市天河区人民法院",
-                "keywords": ["书面合同", "未签", "没签", "双倍工资", "未签订"]
-            },
-            {
-                "title": "赵某诉某建筑公司拖欠工资案",
-                "summary": "用人单位长期拖欠工资，劳动者申请支付令后"
-                          "法院判决支付拖欠工资及赔偿金。",
-                "court": "深圳市南山区人民法院",
-                "keywords": ["工资", "拖欠", "克扣", "欠薪", "不发"]
-            },
-            {
-                "title": "陈某诉某物流公司加班费争议案",
-                "summary": "用人单位未依法支付加班费，"
-                          "法院判决支付法定标准的加班费差额。",
-                "court": "杭州市余杭区人民法院",
-                "keywords": ["加班", "加班费", "工时", "超时"]
-            }
+    def _build_cases(self, query: str) -> List[Dict]:
+        templates = [
+            {"title": "张某诉某科技公司违法解除劳动合同案", "summary": "用人单位未依法提前通知即解除劳动合同，法院判决支付双倍经济补偿。", "court": "北京市海淀区人民法院", "keywords": ["辞退", "解雇", "开除", "解除", "赔偿", "违法"]},
+            {"title": "李某诉某制造公司试用期违法解除案", "summary": "试用期解除未证明不符合录用条件，法院认定违法解除，判决支付赔偿金。", "court": "上海市浦东新区人民法院", "keywords": ["试用期", "试用", "转正", "录用条件"]},
+            {"title": "王某诉某服务公司未签订书面劳动合同案", "summary": "未在一个月内签订书面劳动合同，法院判决支付双倍工资差额。", "court": "广州市天河区人民法院", "keywords": ["书面合同", "未签", "没签", "双倍工资"]},
+            {"title": "赵某诉某建筑公司拖欠工资案", "summary": "长期拖欠工资，法院判决支付拖欠工资及赔偿金。", "court": "深圳市南山区人民法院", "keywords": ["工资", "拖欠", "克扣", "欠薪", "不发"]},
+            {"title": "陈某诉某物流公司加班费争议案", "summary": "未依法支付加班费，法院判决支付加班费差额。", "court": "杭州市余杭区人民法院", "keywords": ["加班", "加班费", "工时", "超时"]}
         ]
-
-        # 根据查询内容匹配案例
-        for template in case_templates:
-            if any(kw in query for kw in template["keywords"]):
-                cases.append({
-                    "title": template["title"],
-                    "summary": template["summary"],
-                    "court": template["court"]
-                })
-
-        # 如果没有匹配到任何案例，返回通用案例
+        cases = []
+        for t in templates:
+            if any(kw in query for kw in t["keywords"]):
+                cases.append({"title": t["title"], "summary": t["summary"], "court": t["court"]})
         if not cases:
-            cases.append({
-                "title": "张某诉某科技公司违法解除劳动合同案",
-                "summary": "用人单位未依法提前通知即解除劳动合同，"
-                          "法院判决支付双倍经济补偿（赔偿金）。",
-                "court": "北京市海淀区人民法院"
-            })
-
+            cases.append({"title": templates[0]["title"], "summary": templates[0]["summary"], "court": templates[0]["court"]})
         return cases
 
+    def _recommend_services(self, query: str) -> List[Dict]:
+        if any(kw in query for kw in ["工资", "拖欠", "欠薪", "克扣"]):
+            return [{"service_type": "工资拖欠维权", "hotline": "12333", "institution": "当地劳动监察大队", "action_guide": ["收集工资条、银行流水、考勤记录等证据", "向劳动监察大队投诉", "如投诉无果申请劳动仲裁", "对仲裁结果不服可向法院起诉"]}]
+        elif any(kw in query for kw in ["辞退", "解雇", "开除", "解除"]):
+            return [{"service_type": "违法解除维权", "hotline": "12348", "institution": "当地法律援助中心", "action_guide": ["保留解除通知书、聊天记录等证据", "申请劳动仲裁要求支付赔偿金", "拨打12348法援热线咨询", "经济困难可申请免费律师"]}]
+        else:
+            return [{"service_type": "劳动争议维权", "hotline": "12333", "institution": "当地劳动人事争议仲裁委员会", "action_guide": ["收集相关证据材料", "向劳动仲裁委申请仲裁", "仲裁时效一年", "可拨打12333或12348咨询"]}]
 
-# 全局单例
+    def run(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        expanded_query = self._expand_query(query)
+        retrieved_docs = self._bm25_search(expanded_query, top_k=20)
+        answer = self._generate_answer(query, retrieved_docs)
+        confidence = 0.85 if retrieved_docs else 0.3
+        if retrieved_docs:
+            max_score = max(doc.get("score", 0) for doc in retrieved_docs)
+            confidence = min(0.3 + max_score / 10, 0.95)
+        citations = [{"law": d.get("law", "劳动合同法"), "article": d.get("article", ""), "content": d.get("content", ""), "relevance": round(d.get("score", 0), 4)} for d in retrieved_docs[:top_k]]
+        cases = self._build_cases(query)
+        landing_services = self._recommend_services(query)
+        return {"answer": answer, "citations": citations, "cases": cases, "landing_services": landing_services, "confidence": round(confidence, 4), "expanded_query": expanded_query}
+
 _pipeline = None
 
-
 def get_pipeline() -> RAGPipeline:
-    """获取全局 RAGPipeline 单例实例"""
     global _pipeline
     if _pipeline is None:
         _pipeline = RAGPipeline()

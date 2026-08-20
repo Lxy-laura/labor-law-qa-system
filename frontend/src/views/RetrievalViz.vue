@@ -3,7 +3,7 @@
   <div class="h-full p-4 overflow-y-auto custom-scrollbar">
     <!-- 页面标题 -->
     <div class="mb-5">
-      <h2 class="page-title">检索可视化</h2>
+      <h2 class="page-title">检索调试</h2>
       <p class="text-sm text-gray-400 mt-1">RAG 检索增强生成 - 四步管线全流程可视化展示</p>
     </div>
 

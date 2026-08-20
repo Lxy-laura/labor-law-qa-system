@@ -4,14 +4,15 @@
 提供用户注册和登录功能：
 - POST /api/auth/register - 用户注册
 - POST /api/auth/login    - 用户登录
+- GET  /api/auth/info     - 获取当前登录用户信息
 """
 from fastapi import APIRouter, Depends, HTTPException
 from database import get_db
 from models.schemas import RegisterRequest, LoginRequest, TokenResponse
 from auth.jwt_handler import hash_password, verify_password, create_access_token
+from auth.decorators import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
-
 
 @router.post("/register", response_model=TokenResponse, summary="用户注册")
 def register(req: RegisterRequest, db=Depends(get_db)):
@@ -53,7 +54,6 @@ def register(req: RegisterRequest, db=Depends(get_db)):
         role="user"
     )
 
-
 @router.post("/login", response_model=TokenResponse, summary="用户登录")
 def login(req: LoginRequest, db=Depends(get_db)):
     """用户登录接口"""
@@ -85,3 +85,26 @@ def login(req: LoginRequest, db=Depends(get_db)):
         username=user["username"],
         role=user["role"]
     )
+
+@router.get("/info", summary="获取当前登录用户信息")
+def get_user_info(user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """
+    获取当前登录用户的详细信息（从 JWT Token 解析）
+    用于前端启动时同步角色状态，确保 role 正确
+    """
+    cur = db.cursor()
+    cur.execute(
+        "SELECT id, username, role FROM users WHERE id = ?",
+        (user["user_id"],)
+    )
+    db_user = cur.fetchone()
+    cur.close()
+
+    if not db_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    return {
+        "user_id": db_user["id"],
+        "username": db_user["username"],
+        "role": db_user["role"]
+    }

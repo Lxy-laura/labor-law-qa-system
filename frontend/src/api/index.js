@@ -36,12 +36,13 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response) => {
     const res = response.data
-    // 后端约定 code=0 表示成功
-    if (res.code !== undefined && res.code !== 0) {
+    // 后端约定 code=0 表示成功（如果有的话）
+    if (res && typeof res === 'object' && res.code !== undefined && res.code !== 0) {
       ElMessage.error(res.message || '请求失败')
       return Promise.reject(new Error(res.message || '请求失败'))
     }
-    return res.data !== undefined ? res.data : res
+    // 直接返回响应体，不剥离任何字段
+    return res
   },
   (error) => {
     const { response } = error
