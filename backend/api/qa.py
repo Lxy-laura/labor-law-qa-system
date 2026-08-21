@@ -108,11 +108,22 @@ def get_conversation_detail(
     if not row:
         raise HTTPException(status_code=404, detail="对话记录不存在或无权访问")
 
+    # 解析引用来源
+    citations = json.loads(row["citations"]) if row["citations"] else []
+
+    # 归一化旧数据：如果 relevance > 1，说明是旧的 BM25 原始分数，需要归一化到 0-1
+    if citations:
+        max_rel = max(c.get("relevance", 0) for c in citations)
+        if max_rel > 1:
+            for c in citations:
+                raw = c.get("relevance", 0)
+                c["relevance"] = round(raw / max_rel, 4) if max_rel > 0 else 0
+
     return {
         "id": row["id"],
         "question": row["question"],
         "answer": row["answer"],
-        "citations": json.loads(row["citations"]) if row["citations"] else [],
+        "citations": citations,
         "confidence": row["confidence"],
         "is_favorited": bool(row["is_favorited"]) if "is_favorited" in row.keys() else False,
         "created_at": row["created_at"]

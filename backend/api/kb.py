@@ -33,7 +33,29 @@ def list_documents(db=Depends(get_db), user: dict = Depends(get_current_user)):
             created_at=row["created_at"]
         ))
     return DocumentListResponse(documents=docs, total=len(docs))
+@router.get("/stats", summary="获取知识库统计信息")
+def get_kb_stats(db=Depends(get_db), user: dict = Depends(get_current_user)):
+    """获取知识库统计信息：文档总数、分类统计"""
+    cur = db.cursor()
 
+    cur.execute("SELECT COUNT(*) AS count FROM documents")
+    total_documents = cur.fetchone()["count"]
+
+    cur.execute("""
+        SELECT doc_type, COUNT(*) AS count
+        FROM documents
+        GROUP BY doc_type
+    """)
+    by_category = {}
+    for row in cur.fetchall():
+        by_category[row["doc_type"] or "未分类"] = row["count"]
+
+    cur.close()
+
+    return {
+        "totalDocuments": total_documents,
+        "byCategory": by_category
+    }
 
 @router.post("/upload", response_model=UploadResponse, summary="上传文档到知识库")
 async def upload_document(

@@ -20,7 +20,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labor_law.db
 
 def get_connection():
     """获取 SQLite 数据库连接"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # 使查询结果可以通过列名访问
     return conn
 

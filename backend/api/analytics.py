@@ -10,59 +10,91 @@
 """
 from fastapi import APIRouter, Depends, Query
 from database import get_db
-from models.schemas import OverviewResponse
 from auth.decorators import require_admin
 
 router = APIRouter(prefix="/api/analytics", tags=["数据分析"])
 
-@router.get("/overview", response_model=OverviewResponse, summary="系统数据概览")
+def safe_query(cur, sql, params=(), default=0):
+    """安全执行 SQL，表不存在时返回默认值"""
+    try:
+        cur.execute(sql, params)
+        return cur.fetchone()
+    except Exception:
+        return None
+
+def safe_query_all(cur, sql, params=()):
+    """安全执行 SQL 查询多行，表不存在时返回空列表"""
+    try:
+        cur.execute(sql, params)
+        return cur.fetchall()
+    except Exception:
+        return []
+
+@router.get("/overview", summary="系统数据概览")
 def get_overview(db=Depends(get_db), user: dict = Depends(require_admin)):
     """获取系统运行数据概览（仅管理员）"""
     cur = db.cursor()
 
-    cur.execute("SELECT COUNT(*) AS count FROM users")
-    total_users = cur.fetchone()["count"]
+    # 统计用户总数
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM users")
+    total_users = row["count"] if row else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM documents")
-    total_documents = cur.fetchone()["count"]
+    # 统计文档总数
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM documents")
+    total_documents = row["count"] if row else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM chat_history")
-    total_questions = cur.fetchone()["count"]
+    # 统计问答总数
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM chat_history")
+    total_questions = row["count"] if row else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM judge_records")
-    total_judgments = cur.fetchone()["count"]
+    # 统计研判总数
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM judge_records")
+    total_judgments = row["count"] if row else 0
 
-    cur.execute("SELECT AVG(confidence) AS avg FROM chat_history WHERE confidence IS NOT NULL")
-    avg_result = cur.fetchone()
-    avg_confidence = float(avg_result["avg"]) if avg_result["avg"] else 0.0
+    # 计算平均置信度
+    row = safe_query(cur, "SELECT AVG(confidence) AS avg FROM chat_history WHERE confidence IS NOT NULL")
+    avg_confidence = float(row["avg"]) if row and row["avg"] else 0.0
 
-    cur.execute("""
+    # 查询最近10条问答记录
+    rows = safe_query_all(cur, """
         SELECT ch.id, ch.question, ch.answer, ch.confidence, ch.created_at, u.username
         FROM chat_history ch
         LEFT JOIN users u ON ch.user_id = u.id
         ORDER BY ch.created_at DESC LIMIT 10
     """)
-    recent_questions = [dict(row) for row in cur.fetchall()]
+    recent_questions = []
+    for row in rows:
+        recent_questions.append({
+            "id": row["id"],
+            "question": row["question"] or "",
+            "answer": (row["answer"] or "")[:100],
+            "confidence": float(row["confidence"]) if row["confidence"] is not None else 0.0,
+            "created_at": str(row["created_at"]) if row["created_at"] else "",
+            "username": row["username"] or "匿名用户"
+        })
 
-    cur.execute("""
+    # 查询近7天每日问答数量趋势
+    rows = safe_query_all(cur, """
         SELECT DATE(created_at) AS date, COUNT(*) AS count
         FROM chat_history
         WHERE created_at >= DATE('now', '-7 days', 'localtime')
         GROUP BY DATE(created_at) ORDER BY date
     """)
-    question_trend = [dict(row) for row in cur.fetchall()]
+    question_trend = []
+    for row in rows:
+        question_trend.append({"date": str(row["date"]), "count": row["count"]})
 
     cur.close()
 
-    return OverviewResponse(
-        total_users=total_users,
-        total_documents=total_documents,
-        total_questions=total_questions,
-        total_judgments=total_judgments,
-        avg_confidence=round(avg_confidence, 4),
-        recent_questions=recent_questions,
-        question_trend=question_trend
-    )
+    return {
+        "total_users": total_users,
+        "total_documents": total_documents,
+        "total_questions": total_questions,
+        "total_judgments": total_judgments,
+        "avg_confidence": round(avg_confidence, 4),
+        "recent_questions": recent_questions,
+        "question_trend": question_trend
+    }
 
 @router.get("/qa-trend", summary="问答趋势分析")
 def get_qa_trend(
@@ -72,56 +104,51 @@ def get_qa_trend(
 ):
     """获取问答趋势数据（近N天每日提问数和活跃用户数）"""
     from datetime import datetime, timedelta
-    # 在 Python 中计算起始日期，不能直接用 SQLite 的 DATE('now', ?) 参数绑定
     start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
     cur = db.cursor()
 
-    # 每日提问数
-    cur.execute(
-        """SELECT DATE(created_at) AS date, COUNT(*) AS count
-           FROM chat_history
-           WHERE created_at >= ?
-           GROUP BY DATE(created_at)
-           ORDER BY date""",
-        (start_date,)
-    )
-    rows = cur.fetchall()
+    rows = safe_query_all(cur, """
+        SELECT DATE(created_at) AS date, COUNT(*) AS count
+        FROM chat_history
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date
+    """, (start_date,))
 
-    # 每日活跃用户数（有提问的用户）
-    cur.execute(
-        """SELECT DATE(created_at) AS date, COUNT(DISTINCT user_id) AS count
-           FROM chat_history
-           WHERE created_at >= ?
-           GROUP BY DATE(created_at)
-           ORDER BY date""",
-        (start_date,)
-    )
-    user_rows = cur.fetchall()
+    user_rows = safe_query_all(cur, """
+        SELECT DATE(created_at) AS date, COUNT(DISTINCT user_id) AS count
+        FROM chat_history
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY date
+    """, (start_date,))
     cur.close()
 
-    # 合并数据
     user_map = {r["date"]: r["count"] for r in user_rows}
-    dates = []
-    questions = []
-    users = []
+    dates, questions, users = [], [], []
     for r in rows:
         d = r["date"]
-        dates.append(d[5:] if len(d) > 5 else d)  # 取 MM-DD
+        dates.append(d[5:] if len(d) > 5 else d)
         questions.append(r["count"])
         users.append(user_map.get(d, 0))
 
     return {"dates": dates, "questions": questions, "users": users}
 
 @router.get("/hot-categories", summary="问题分类分布")
-def get_hot_categories(db=Depends(get_db), user: dict = Depends(require_admin)):
+def get_hot_categories(
+    db=Depends(get_db),
+    user: dict = Depends(require_admin)
+):
     """获取问题分类分布（按关键词匹配法律领域）"""
     cur = db.cursor()
-    cur.execute("SELECT question FROM chat_history")
-    rows = cur.fetchall()
+    rows = safe_query_all(cur, "SELECT question FROM chat_history")
     cur.close()
 
-    categories = {"工资报酬": 0, "解除终止": 0, "社保公积金": 0, "工时休假": 0, "调岗调薪": 0, "其他": 0}
+    categories = {
+        "工资报酬": 0, "解除终止": 0, "社保公积金": 0,
+        "工时休假": 0, "调岗调薪": 0, "其他": 0
+    }
     keywords = {
         "工资报酬": ["工资", "薪酬", "报酬", "拖欠", "克扣", "加班费", "绩效", "奖金", "最低工资"],
         "解除终止": ["解除", "终止", "辞退", "开除", "离职", "补偿金", "赔偿金", "经济补偿"],
@@ -129,6 +156,7 @@ def get_hot_categories(db=Depends(get_db), user: dict = Depends(require_admin)):
         "工时休假": ["工时", "加班", "休假", "年假", "假期", "休息日", "法定假日", "调休"],
         "调岗调薪": ["调岗", "调薪", "岗位", "转岗", "降薪", "变更"]
     }
+
     for row in rows:
         q = row["question"] if row["question"] else ""
         matched = False
@@ -143,21 +171,23 @@ def get_hot_categories(db=Depends(get_db), user: dict = Depends(require_admin)):
     return [{"name": k, "value": v} for k, v in categories.items()]
 
 @router.get("/user-activity", summary="用户活跃度")
-def get_user_activity(db=Depends(get_db), user: dict = Depends(require_admin)):
+def get_user_activity(
+    db=Depends(get_db),
+    user: dict = Depends(require_admin)
+):
     """获取用户活跃度（按24小时时段分布）"""
     cur = db.cursor()
-    cur.execute(
-        """SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour,
-                  COUNT(*) AS count
-           FROM chat_history
-           WHERE created_at >= DATE('now', '-30 days')
-           GROUP BY hour ORDER BY hour"""
-    )
-    rows = cur.fetchall()
+    rows = safe_query_all(cur, """
+        SELECT CAST(strftime('%H', created_at) AS INTEGER) AS hour,
+               COUNT(*) AS count
+        FROM chat_history
+        WHERE created_at >= DATE('now', '-30 days')
+        GROUP BY hour ORDER BY hour
+    """)
     cur.close()
 
     hour_map = {r["hour"]: r["count"] for r in rows}
-    labels = ['0-2', '2-4', '4-6', '6-8', '8-10', '10-12', '12-14', '14-16', '16-18', '18-20', '20-22', '22-24']
+    labels = ['0-2','2-4','4-6','6-8','8-10','10-12','12-14','14-16','16-18','18-20','20-22','22-24']
     counts = []
     for i in range(0, 24, 2):
         counts.append(hour_map.get(i, 0) + hour_map.get(i + 1, 0))
@@ -165,34 +195,45 @@ def get_user_activity(db=Depends(get_db), user: dict = Depends(require_admin)):
     return {"labels": labels, "counts": counts}
 
 @router.get("/retrieval-metrics", summary="检索质量指标")
-def get_retrieval_metrics(db=Depends(get_db), user: dict = Depends(require_admin)):
+def get_retrieval_metrics(
+    db=Depends(get_db),
+    user: dict = Depends(require_admin)
+):
     """获取检索质量指标（基于真实问答数据的统计）"""
     cur = db.cursor()
 
-    cur.execute("SELECT AVG(confidence) AS avg FROM chat_history WHERE confidence IS NOT NULL")
-    avg_conf = cur.fetchone()["avg"]
+    # 平均置信度
+    row = safe_query(cur, "SELECT AVG(confidence) AS avg FROM chat_history WHERE confidence IS NOT NULL")
+    avg_conf = row["avg"] if row else None
     relevance_score = round(float(avg_conf) * 100) if avg_conf else 0
 
-    cur.execute("SELECT COUNT(*) AS total FROM chat_history")
-    total_qa = cur.fetchone()["total"]
-    cur.execute("SELECT COUNT(*) AS count FROM chat_history WHERE citations IS NOT NULL AND citations != '' AND citations != '[]'")
-    cited_qa = cur.fetchone()["count"]
+    # 问答总数
+    row = safe_query(cur, "SELECT COUNT(*) AS total FROM chat_history")
+    total_qa = row["total"] if row else 0
+
+    # 有引用来源的问答占比
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM chat_history WHERE citations IS NOT NULL AND citations != '' AND citations != '[]'")
+    cited_qa = row["count"] if row else 0
     citation_rate = round(cited_qa / total_qa * 100) if total_qa > 0 else 0
 
-    cur.execute("SELECT AVG(rating) AS avg FROM feedback")
-    avg_rating = cur.fetchone()["avg"]
+    # 反馈平均评分
+    row = safe_query(cur, "SELECT AVG(rating) AS avg FROM feedback")
+    avg_rating = row["avg"] if row else None
     satisfaction = round(float(avg_rating) * 20) if avg_rating else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM documents")
-    doc_count = cur.fetchone()["count"]
+    # 知识库文档数
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM documents")
+    doc_count = row["count"] if row else 0
     recall = min(100, doc_count) if doc_count > 0 else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM chat_history WHERE citations IS NOT NULL AND citations != '' AND citations != '[]' AND answer IS NOT NULL AND answer != ''")
-    accurate_qa = cur.fetchone()["count"]
+    # 准确率
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM chat_history WHERE citations IS NOT NULL AND citations != '' AND citations != '[]' AND answer IS NOT NULL AND answer != ''")
+    accurate_qa = row["count"] if row else 0
     accuracy = round(accurate_qa / total_qa * 100) if total_qa > 0 else 0
 
-    cur.execute("SELECT COUNT(*) AS count FROM chat_history WHERE created_at >= DATE('now', '-7 days')")
-    recent_qa = cur.fetchone()["count"]
+    # 响应速度
+    row = safe_query(cur, "SELECT COUNT(*) AS count FROM chat_history WHERE created_at >= DATE('now', '-7 days')")
+    recent_qa = row["count"] if row else 0
     response_speed = min(100, recent_qa * 10) if recent_qa > 0 else 0
 
     cur.close()

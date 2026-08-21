@@ -45,17 +45,13 @@
           <p class="text-xs text-gray-400 line-clamp-2 mb-1">{{ item.answer }}</p>
           <div class="flex items-center justify-between text-xs text-gray-400">
             <span>{{ formatTime(item.created_at) }}</span>
-            <div class="flex items-center gap-1">
-              <!-- 标记是否为旧回答（未配置API Key时生成的） -->
-              <el-tag v-if="isOldAnswer(item.answer)" size="small" type="warning" effect="plain">旧回答</el-tag>
-              <el-icon
-                class="cursor-pointer hover:text-yellow-500 transition-colors"
-                :class="item.is_favorited ? 'text-yellow-500' : 'text-gray-300'"
-                @click.stop="toggleFavorite(item)"
-              >
-                <Star />
-              </el-icon>
-            </div>
+            <el-icon
+              class="cursor-pointer hover:text-yellow-500 transition-colors"
+              :class="item.is_favorited ? 'text-yellow-500' : 'text-gray-300'"
+              @click.stop="toggleFavorite(item)"
+            >
+              <Star />
+            </el-icon>
           </div>
         </div>
         <div v-if="filteredList.length === 0" class="flex flex-col items-center justify-center h-64 text-gray-400">
@@ -75,22 +71,8 @@
           <el-tag v-if="selectedItem.confidence" size="small" type="success" effect="plain">
             置信度 {{ (selectedItem.confidence * 100).toFixed(0) }}%
           </el-tag>
-          <el-tag v-if="isOldAnswer(selectedItem.answer)" size="small" type="warning" effect="plain">
-            旧回答（法条匹配）
-          </el-tag>
         </div>
         <div class="flex items-center gap-2">
-          <!-- 重新生成按钮：仅对旧回答显示 -->
-          <el-button
-            v-if="isOldAnswer(selectedItem.answer)"
-            size="small"
-            type="primary"
-            :icon="Refresh"
-            :loading="regenerating"
-            @click="regenerateAnswer(selectedItem)"
-          >
-            重新生成 AI 回答
-          </el-button>
           <el-button
             size="small"
             :icon="selectedItem.is_favorited ? StarFilled : Star"
@@ -130,86 +112,74 @@
                 <el-icon color="#fff"><Service /></el-icon>
               </div>
               <div class="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
-                <!-- 重新生成加载中 -->
-                <div v-if="regenerating" class="flex items-center gap-2 text-gray-400 py-2">
-                  <span class="text-sm">正在用 AI 重新生成回答</span>
-                  <span class="flex gap-1">
-                    <span class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style="animation-delay:0s"></span>
-                    <span class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style="animation-delay:0.2s"></span>
-                    <span class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style="animation-delay:0.4s"></span>
-                  </span>
-                </div>
-                <!-- 回答内容 -->
-                <template v-else>
-                  <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{{ displayAnswer }}</p>
+                <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{{ displayAnswer }}</p>
 
-                  <!-- 引用来源入口 -->
-                  <div v-if="selectedSources.length" class="mt-3 pt-3 border-t border-gray-50">
+                <!-- 引用来源入口 -->
+                <div v-if="selectedSources.length" class="mt-3 pt-3 border-t border-gray-50">
+                  <div
+                    class="flex items-center gap-1 text-xs text-secondary cursor-pointer hover:underline"
+                    @click="sourcesVisible = !sourcesVisible"
+                  >
+                    <el-icon><Link /></el-icon>
+                    <span>引用 {{ selectedSources.length }} 个来源</span>
+                    <el-icon><ArrowRight /></el-icon>
+                  </div>
+                  <!-- 展开来源列表 -->
+                  <div v-if="sourcesVisible" class="mt-2 space-y-2">
                     <div
-                      class="flex items-center gap-1 text-xs text-secondary cursor-pointer hover:underline"
-                      @click="sourcesVisible = !sourcesVisible"
+                      v-for="(src, idx) in selectedSources"
+                      :key="idx"
+                      class="bg-gray-50 rounded-lg p-2 text-xs"
                     >
-                      <el-icon><Link /></el-icon>
-                      <span>引用 {{ selectedSources.length }} 个来源</span>
-                      <el-icon><ArrowRight /></el-icon>
-                    </div>
-                    <!-- 展开来源列表 -->
-                    <div v-if="sourcesVisible" class="mt-2 space-y-2">
-                      <div
-                        v-for="(src, idx) in selectedSources"
-                        :key="idx"
-                        class="bg-gray-50 rounded-lg p-2 text-xs"
-                      >
-                        <div class="flex items-center justify-between mb-1">
-                          <span class="font-medium text-gray-600">{{ src.law }} {{ src.article }}</span>
-                          <el-tag size="small" effect="plain">
-                            相关度 {{ src.relevance ? (src.relevance * 100).toFixed(0) : 0 }}%
-                          </el-tag>
-                        </div>
-                        <p class="text-gray-500 line-clamp-2">{{ src.content }}</p>
+                      <div class="flex items-center justify-between mb-1">
+                        <span class="font-medium text-gray-600">{{ src.law }} {{ src.article }}</span>
+                        <el-tag size="small" effect="plain">
+                          相关度 {{ Math.round((src.relevance || 0) * 100) }}%
+                        </el-tag>
                       </div>
+                      <p class="text-gray-500 line-clamp-2">{{ src.content }}</p>
                     </div>
                   </div>
+                </div>
 
-                  <!-- 相似案例 -->
-                  <div v-if="selectedCases.length" class="mt-3 pt-3 border-t border-gray-50">
-                    <p class="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                      <el-icon><Files /></el-icon>
-                      相似案例推荐
-                    </p>
-                    <div v-for="c in selectedCases" :key="c.title" class="mb-2">
-                      <div class="bg-gray-50 rounded-lg p-2">
-                        <p class="text-sm font-medium text-gray-700 truncate">{{ c.title }}</p>
-                        <p class="text-xs text-gray-400 mt-0.5 line-clamp-2">{{ c.summary }}</p>
-                        <div class="flex items-center gap-2 mt-1">
-                          <el-tag size="small" effect="plain">{{ c.court || '基层法院' }}</el-tag>
-                          <el-tag size="small" type="success" effect="plain">{{ c.result || '胜诉' }}</el-tag>
-                        </div>
+                <!-- 相似案例 -->
+                <div v-if="selectedCases.length" class="mt-3 pt-3 border-t border-gray-50">
+                  <p class="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
+                    <el-icon><Files /></el-icon>
+                    相似案例推荐
+                  </p>
+                  <div v-for="c in selectedCases" :key="c.title" class="mb-2">
+                    <div class="bg-gray-50 rounded-lg p-2">
+                      <p class="text-sm font-medium text-gray-700 truncate">{{ c.title }}</p>
+                      <p class="text-xs text-gray-400 mt-0.5 line-clamp-2">{{ c.summary }}</p>
+                      <div class="flex items-center gap-2 mt-1">
+                        <el-tag size="small" effect="plain">{{ c.court || '基层法院' }}</el-tag>
+                        <el-tag size="small" type="success" effect="plain">{{ c.result || '胜诉' }}</el-tag>
                       </div>
                     </div>
                   </div>
+                </div>
 
-                  <!-- 落地服务 -->
-                  <div v-if="selectedServices && selectedServices.length" class="mt-3 pt-3 border-t border-gray-50">
-                    <p class="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                      <el-icon><Service /></el-icon>
-                      落地服务指引
-                    </p>
-                    <div class="space-y-2">
-                      <div v-for="(svc, idx) in selectedServices" :key="idx"
-                        class="flex items-center gap-3 bg-green-50 rounded-lg p-2"
-                      >
-                        <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-                          <el-icon color="#10B981"><Phone /></el-icon>
-                        </div>
-                        <div>
-                          <p class="text-sm font-medium text-gray-700">{{ svc.service_type }}：{{ svc.hotline }}</p>
-                          <p class="text-xs text-gray-500">{{ svc.institution }}</p>
-                        </div>
+                <!-- 落地服务 -->
+                <div v-if="selectedServices && selectedServices.length" class="mt-3 pt-3 border-t border-gray-50">
+                  <p class="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
+                    <el-icon><Service /></el-icon>
+                    落地服务指引
+                  </p>
+                  <div class="space-y-2">
+                    <div v-for="(svc, idx) in selectedServices" :key="idx"
+                      class="flex items-center gap-3 bg-green-50 rounded-lg p-2"
+                    >
+                      <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                        <el-icon color="#10B981"><Phone /></el-icon>
+                      </div>
+                      <div>
+                        <p class="text-sm font-medium text-gray-700">{{ svc.service_type }}：{{ svc.hotline }}</p>
+                        <p class="text-xs text-gray-500">{{ svc.institution }}</p>
                       </div>
                     </div>
                   </div>
-                </template>
+                </div>
               </div>
             </div>
           </div>
@@ -229,7 +199,6 @@
 /**
  * 提问历史页面
  * 左侧列表 + 右侧气泡式对话展示（与智能问答页面风格一致）
- * 支持对旧回答（法条匹配）重新生成 AI 回答
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -237,11 +206,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Search, Clock, User, Service, Star, StarFilled,
   ChatLineRound, Delete, Document, Link, ArrowRight,
-  Refresh, Files, Phone
+  Files, Phone
 } from '@element-plus/icons-vue'
 import {
   getConversations, getConversationMessages,
-  deleteConversation, toggleFavoriteApi, regenerateAnswer as regenerateAnswerApi
+  deleteConversation, toggleFavoriteApi
 } from '../api/qa'
 
 const router = useRouter()
@@ -255,21 +224,15 @@ const selectedSources = ref([])
 const selectedCases = ref([])
 const selectedServices = ref([])
 const sourcesVisible = ref(false)
-const regenerating = ref(false)
 
-// 判断是否为旧回答（未配置 API Key 时生成的法条匹配结果）
+// 旧回答警告标记
 const OLD_ANSWER_MARKER = '未配置 DeepSeek API Key'
 
-function isOldAnswer(answer) {
-  return answer && answer.includes(OLD_ANSWER_MARKER)
-}
-
-// 显示的回答内容：如果是旧回答，去掉末尾的警告提示
+// 显示的回答内容：去掉旧回答的警告提示行
 const displayAnswer = computed(() => {
   if (!selectedItem.value || !selectedItem.value.answer) return ''
   const answer = selectedItem.value.answer
-  if (isOldAnswer(answer)) {
-    // 去掉警告行
+  if (answer.includes(OLD_ANSWER_MARKER)) {
     const lines = answer.split('\n')
     const filtered = lines.filter(line => !line.includes(OLD_ANSWER_MARKER))
     return filtered.join('\n').trim()
@@ -314,12 +277,11 @@ async function selectHistory(item) {
   selectedItem.value = item
   sourcesVisible.value = false
 
-  // 尝试加载对话详情（包含引用来源）
+  // 加载对话详情（包含引用来源，后端已归一化）
   try {
     const detail = await getConversationMessages(item.id)
     if (detail) {
       selectedItem.value = detail
-      // 解析引用来源
       if (detail.citations && Array.isArray(detail.citations)) {
         selectedSources.value = detail.citations
       } else {
@@ -328,40 +290,6 @@ async function selectHistory(item) {
     }
   } catch (e) {
     selectedSources.value = []
-  }
-}
-
-// 重新生成 AI 回答
-async function regenerateAnswer(item) {
-  regenerating.value = true
-  try {
-    const res = await regenerateAnswerApi(item.id)
-    // 更新显示
-    selectedItem.value = {
-      ...selectedItem.value,
-      answer: res.answer,
-      confidence: res.confidence
-    }
-    if (res.citations && Array.isArray(res.citations)) {
-      selectedSources.value = res.citations
-    }
-    if (res.cases) {
-      selectedCases.value = res.cases
-    }
-    if (res.landing_services) {
-      selectedServices.value = res.landing_services
-    }
-    // 更新列表中的数据
-    const idx = historyList.value.findIndex(h => h.id === item.id)
-    if (idx !== -1) {
-      historyList.value[idx].answer = res.answer
-      historyList.value[idx].confidence = res.confidence
-    }
-    ElMessage.success('回答已用 AI 重新生成')
-  } catch (e) {
-    ElMessage.error('重新生成失败，请稍后重试')
-  } finally {
-    regenerating.value = false
   }
 }
 
