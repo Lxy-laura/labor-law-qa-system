@@ -1,14 +1,24 @@
 <template>
-  <!-- 用户反馈页面（管理员） -->
+  <!-- 用户反馈页面 -->
+  <!-- 普通用户：查看自己提交的反馈记录 -->
+  <!-- 管理员：查看所有用户的反馈记录 -->
   <div class="h-full p-4 overflow-y-auto custom-scrollbar">
     <!-- 页面标题 -->
     <div class="flex items-center justify-between mb-5">
       <div>
-        <h2 class="page-title">用户反馈</h2>
-        <p class="text-sm text-gray-400 mt-1">查看用户对问答回答的评价与建议</p>
+        <h2 class="page-title">{{ isAdmin ? '用户反馈管理' : '我的反馈' }}</h2>
+        <p class="text-sm text-gray-400 mt-1">
+          {{ isAdmin ? '查看所有用户对问答回答的评价与建议' : '查看您提交的问答反馈记录' }}
+        </p>
       </div>
       <div class="flex items-center gap-3">
-        <el-select v-model="filterRating" placeholder="全部评分" class="!w-32" @change="loadFeedback">
+        <el-select
+          v-if="isAdmin"
+          v-model="filterRating"
+          placeholder="全部评分"
+          class="!w-32"
+          @change="loadFeedback"
+        >
           <el-option label="全部评分" value="" />
           <el-option label="5星" value="5" />
           <el-option label="4星" value="4" />
@@ -79,7 +89,8 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="用户" width="100" align="center">
+        <!-- 管理员才能看到用户名列 -->
+        <el-table-column v-if="isAdmin" label="用户" width="100" align="center">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.username || '匿名用户' }}</el-tag>
           </template>
@@ -93,13 +104,21 @@
       </el-table>
 
       <!-- 空状态 -->
-      <div v-if="feedbackList.length === 0" class="flex flex-col items-center justify-center py-16 text-gray-400">
+      <div v-if="feedbackList.length === 0 && !loading" class="flex flex-col items-center justify-center py-16 text-gray-400">
         <el-icon :size="48"><ChatDotRound /></el-icon>
-        <p class="text-sm mt-3">暂无用户反馈</p>
+        <p class="text-sm mt-3">
+          {{ isAdmin ? '暂无用户反馈' : '您还没有提交过反馈，请在智能问答页面评价回答' }}
+        </p>
       </div>
 
-      <!-- 分页 -->
-      <div v-if="total > pageSize" class="flex justify-center py-4">
+      <!-- 加载中状态 -->
+      <div v-if="loading" class="flex items-center justify-center py-16 text-gray-400">
+        <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+        <span class="text-sm ml-2">正在加载反馈数据...</span>
+      </div>
+
+      <!-- 分页（仅管理员有分页） -->
+      <div v-if="isAdmin && total > pageSize" class="flex justify-center py-4">
         <el-pagination
           v-model:current-page="currentPage"
           :page-size="pageSize"
@@ -114,19 +133,25 @@
 
 <script setup>
 /**
- * 用户反馈页面（管理员功能）
- * 查看所有用户对问答回答的评分和评论
+ * 用户反馈页面
+ * 普通用户：查看自己提交的反馈记录（调用 /api/qa/feedback/my）
+ * 管理员：查看所有用户的反馈记录（调用 /api/qa/feedback）
  */
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh, Star, ChatDotRound } from '@element-plus/icons-vue'
-import { getFeedbackList } from '../api/qa'
+import { Refresh, Star, ChatDotRound, Loading } from '@element-plus/icons-vue'
+import { getFeedbackList, getMyFeedback } from '../api/qa'
+import { useUserStore } from '../store/user'
+
+const userStore = useUserStore()
+const isAdmin = computed(() => userStore.isAdmin)
 
 const filterRating = ref('')
 const feedbackList = ref([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = 20
+const loading = ref(false)
 const ratingStats = reactive({ 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 })
 
 onMounted(() => {
@@ -134,12 +159,21 @@ onMounted(() => {
 })
 
 async function loadFeedback() {
+  loading.value = true
   try {
-    const res = await getFeedbackList({
-      rating: filterRating.value || undefined,
-      page: currentPage.value,
-      pageSize
-    })
+    let res
+    if (isAdmin.value) {
+      // 管理员：获取所有用户的反馈
+      res = await getFeedbackList({
+        rating: filterRating.value || undefined,
+        page: currentPage.value,
+        pageSize
+      })
+    } else {
+      // 普通用户：获取自己的反馈
+      res = await getMyFeedback()
+    }
+
     feedbackList.value = res.list || res.items || res || []
     total.value = res.total || feedbackList.value.length
 
@@ -156,9 +190,10 @@ async function loadFeedback() {
       })
     }
   } catch (e) {
-    // 后端未实现时使用模拟数据
     feedbackList.value = []
-    ElMessage.info('反馈数据加载中，请确保后端服务已启动')
+    ElMessage.error('反馈数据加载失败，请确保后端服务已启动')
+  } finally {
+    loading.value = false
   }
 }
 

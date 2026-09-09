@@ -47,7 +47,17 @@ request.interceptors.response.use(
   (error) => {
     const { response } = error
     if (response) {
+      // FastAPI 错误格式：{"detail": "错误信息"}
+      const errorMsg =
+        response.data?.detail ||
+        response.data?.message ||
+        response.data?.msg ||
+        `请求错误 (${response.status})`
+
       switch (response.status) {
+        case 400:
+          ElMessage.error(errorMsg)
+          break
         case 401:
           ElMessage.error('登录已过期，请重新登录')
           localStorage.removeItem('token')
@@ -59,13 +69,16 @@ request.interceptors.response.use(
           ElMessage.error('没有权限执行此操作')
           break
         case 404:
-          ElMessage.error('请求的资源不存在')
+          ElMessage.error(errorMsg)
+          break
+        case 422:
+          ElMessage.error(errorMsg)
           break
         case 500:
           ElMessage.error('服务器内部错误，请稍后重试')
           break
         default:
-          ElMessage.error(response.data?.message || `请求错误 (${response.status})`)
+          ElMessage.error(errorMsg)
       }
     } else if (error.code === 'ECONNABORTED') {
       ElMessage.error('请求超时，请稍后重试')

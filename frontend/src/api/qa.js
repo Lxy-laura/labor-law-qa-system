@@ -40,7 +40,7 @@ export function getConversationMessages(conversationId) {
 }
 
 /**
- * 删除对话历史
+ * 刪除对话历史
  * @param {string} conversationId
  * @returns {Promise}
  */
@@ -107,5 +107,29 @@ export function getFeedbackList(params) {
     url: '/qa/feedback',
     method: 'get',
     params
+  })
+}
+
+/**
+ * 提交问答反馈（普通用户）
+ * @param {Object} data - { chat_id, rating, comment }
+ * @returns {Promise}
+ */
+export function submitFeedback(data) {
+  return request({
+    url: '/qa/feedback',
+    method: 'post',
+    data
+  })
+}
+
+/**
+ * 获取当前用户自己的反馈列表（普通用户）
+ * @returns {Promise}
+ */
+export function getMyFeedback() {
+  return request({
+    url: '/qa/feedback/my',
+    method: 'get'
   })
 }

@@ -64,7 +64,7 @@ const routes = [
         path: 'feedback',
         name: 'Feedback',
         component: () => import('../views/FeedbackView.vue'),
-        meta: { title: '用户反馈', requireAdmin: true }
+        meta: { title: '用户反馈' }
       }
     ]
   },

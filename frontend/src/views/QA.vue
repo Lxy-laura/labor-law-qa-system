@@ -103,9 +103,9 @@
                     <span class="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce" style="animation-delay:0.4s"></span>
                   </span>
                 </div>
-                <!-- 回答内容 -->
+                <!-- 回答内容（Markdown 渲染） -->
                 <template v-else>
-                  <p class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{{ msg.content }}</p>
+                  <div class="markdown-body text-sm text-gray-700 leading-relaxed" v-html="renderMarkdown(msg.content)"></div>
 
                   <!-- 引用来源入口 -->
                   <div v-if="msg.sources && msg.sources.length" class="mt-3 pt-3 border-t border-gray-50">
@@ -168,6 +168,40 @@
                           <p class="text-xs text-gray-600 leading-relaxed">{{ action }}</p>
                         </div>
                       </div>
+                    </div>
+                  </div>
+
+                  <!-- 用户反馈区：评分 + 评论 -->
+                  <div v-if="msg.chatId && !msg.loading" class="mt-3 pt-3 border-t border-gray-50">
+                    <!-- 已提交反馈 -->
+                    <div v-if="msg.feedbackSubmitted" class="flex items-center gap-1.5 text-xs text-green-500">
+                      <el-icon><CircleCheckFilled /></el-icon>
+                      <span>感谢您的反馈！</span>
+                    </div>
+                    <!-- 反馈输入 -->
+                    <div v-else class="flex items-center gap-3 flex-wrap">
+                      <span class="text-xs text-gray-400">这个回答对您有帮助吗？</span>
+                      <el-rate
+                        v-model="msg.feedbackRating"
+                        :colors="['#EF4444','#F59E0B','#10B981']"
+                        size="small"
+                      />
+                      <el-input
+                        v-if="msg.feedbackRating > 0"
+                        v-model="msg.feedbackComment"
+                        placeholder="补充评论（可选）"
+                        size="small"
+                        class="!w-48"
+                      />
+                      <el-button
+                        v-if="msg.feedbackRating > 0"
+                        size="small"
+                        type="primary"
+                        :loading="msg.feedbackSubmitting"
+                        @click="submitFeedbackForMessage(msg)"
+                      >
+                        提交反馈
+                      </el-button>
                     </div>
                   </div>
                 </template>
@@ -248,6 +282,23 @@
         </div>
       </div>
     </el-dialog>
+
+    <!-- 来源详情弹窗 -->
+    <el-dialog v-model="sourceDialogVisible" :title="currentSource ? `${currentSource.law || ''} ${currentSource.article || ''}` : '来源详情'" width="700px">
+      <div v-if="currentSource" class="space-y-3">
+        <div class="flex items-center gap-2">
+          <el-tag size="small" type="info">{{ currentSource.law || '未知法律' }}</el-tag>
+          <el-tag size="small">{{ currentSource.article || '未知条款' }}</el-tag>
+          <el-tag v-if="currentSource.category" size="small" type="success">{{ currentSource.category }}</el-tag>
+        </div>
+        <div>
+          <p class="text-sm font-medium text-gray-600 mb-2">条款内容</p>
+          <div class="bg-gray-50 rounded-lg p-4 max-h-[400px] overflow-y-auto">
+            <pre class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{{ currentSource.content || currentSource.snippet || '暂无内容' }}</pre>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -260,6 +311,23 @@
 import { ref, reactive, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { marked } from 'marked'
+
+// 配置 marked：关闭 mangle 和 headerIds，避免输出多余 HTML
+marked.setOptions({
+  mangle: false,
+  headerIds: false
+})
+
+// 将 Markdown 文本渲染为 HTML（用于 AI 回答内容）
+function renderMarkdown(text) {
+  if (!text) return ''
+  try {
+    return marked.parse(text)
+  } catch {
+    return text
+  }
+}
 import {
   Plus,
   ChatLineRound,
@@ -272,10 +340,11 @@ import {
   Phone,
   QuestionFilled,
   Promotion,
-  Document
+  Document,
+  CircleCheckFilled
 } from '@element-plus/icons-vue'
 import SourceCard from '../components/SourceCard.vue'
-import { askQuestion, getConversations, deleteConversation, createConversation } from '../api/qa'
+import { askQuestion, getConversations, deleteConversation, createConversation, submitFeedback } from '../api/qa'
 
 const inputText = ref('')
 const sending = ref(false)
@@ -284,6 +353,8 @@ const currentConvId = ref('')
 const currentSources = ref([])
 const caseDialogVisible = ref(false)
 const currentCase = ref(null)
+const sourceDialogVisible = ref(false)
+const currentSource = ref(null)
 const route = useRoute()
 
 // 对话历史
@@ -372,6 +443,19 @@ function selectConversation(id) {
 async function deleteConv(id) {
   try {
     await ElMessageBox.confirm('确定删除该对话？', '提示', { type: 'warning' })
+
+    // 如果是本地临时对话（字符串 ID，未保存到数据库），直接从前端列表移除
+    if (typeof id === 'string' && id.startsWith('conv_')) {
+      conversations.value = conversations.value.filter((c) => c.id !== id)
+      if (currentConvId.value === id) {
+        messages.value = []
+        currentSources.value = []
+      }
+      ElMessage.success('已删除')
+      return
+    }
+
+    // 已保存到数据库的对话（整数 ID），调用后端删除接口
     await deleteConversation(id)
     conversations.value = conversations.value.filter((c) => c.id !== id)
     if (currentConvId.value === id) {
@@ -422,7 +506,12 @@ async function handleSend(e) {
     loading: true,
     sources: [],
     similarCases: [],
-    services: null
+    services: null,
+    chatId: null,
+    feedbackRating: 0,
+    feedbackComment: '',
+    feedbackSubmitted: false,
+    feedbackSubmitting: false
   })
   messages.value.push(aiMsg)
 
@@ -432,10 +521,26 @@ async function handleSend(e) {
     const res = await askQuestion({ question: text, conversationId: currentConvId.value })
     aiMsg.loading = false
     aiMsg.content = res.answer
+    // 存储 chat_id，用于用户反馈关联
+    aiMsg.chatId = res.chat_id || null
     // 后端字段映射：citations -> sources, cases -> similarCases, landing_services -> services
     aiMsg.sources = res.sources || res.citations || []
     aiMsg.similarCases = res.similarCases || res.cases || []
     aiMsg.services = res.services || res.landing_services || null
+
+    // 如果当前是本地临时对话（字符串 ID），用后端返回的真实 chat_id 替换
+    if (typeof currentConvId.value === 'string' && currentConvId.value.startsWith('conv_') && res.chat_id) {
+      const oldId = currentConvId.value
+      currentConvId.value = res.chat_id
+      // 更新对话列表中的 ID 和标题
+      const conv = conversations.value.find((c) => c.id === oldId)
+      if (conv) {
+        conv.id = res.chat_id
+        conv.title = text.substring(0, 30) + (text.length > 30 ? '...' : '')
+        conv.question = text
+        conv.answer = res.answer
+      }
+    }
 
     // 更新右侧引用
     if (aiMsg.sources.length) {
@@ -467,9 +572,10 @@ function showSources(sources) {
   currentSources.value = sources
 }
 
-// 查看来源详情
+// 查看来源详情 - 打开来源详情弹窗，展示法律名称、条款编号和条款内容
 function viewSource(source) {
-  ElMessage.info(`查看来源：${source.title}`)
+  currentSource.value = source
+  sourceDialogVisible.value = true
 }
 
 // 显示案例详情
@@ -477,7 +583,89 @@ function showCaseDetail(caseInfo) {
   currentCase.value = caseInfo
   caseDialogVisible.value = true
 }
+
+// 提交用户反馈（评分 + 评论）
+async function submitFeedbackForMessage(msg) {
+  if (!msg.chatId || !msg.feedbackRating) return
+
+  msg.feedbackSubmitting = true
+  try {
+    await submitFeedback({
+      chat_id: msg.chatId,
+      rating: msg.feedbackRating,
+      comment: msg.feedbackComment || null
+    })
+    msg.feedbackSubmitted = true
+    ElMessage.success('反馈提交成功，感谢您的评价！')
+  } catch (e) {
+    ElMessage.error('反馈提交失败，请稍后重试')
+  } finally {
+    msg.feedbackSubmitting = false
+  }
+}
 </script>
 
 <style scoped>
+/* Markdown 渲染样式 */
+.markdown-body {
+  word-break: break-word;
+}
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  font-weight: 600;
+  margin-top: 12px;
+  margin-bottom: 8px;
+  color: #1f2937;
+}
+.markdown-body :deep(h1) { font-size: 18px; }
+.markdown-body :deep(h2) { font-size: 16px; }
+.markdown-body :deep(h3) { font-size: 15px; }
+.markdown-body :deep(h4) { font-size: 14px; }
+.markdown-body :deep(p) {
+  margin: 6px 0;
+}
+.markdown-body :deep(strong) {
+  font-weight: 600;
+  color: #111827;
+}
+.markdown-body :deep(em) {
+  font-style: italic;
+}
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+.markdown-body :deep(li) {
+  margin: 2px 0;
+}
+.markdown-body :deep(blockquote) {
+  border-left: 3px solid #d1d5db;
+  padding-left: 12px;
+  margin: 8px 0;
+  color: #6b7280;
+}
+.markdown-body :deep(code) {
+  background: #f3f4f6;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 12px 0;
+}
 </style>

@@ -20,6 +20,8 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labor_law.db
 
 def get_connection():
     """获取 SQLite 数据库连接"""
+    # check_same_thread=False 允许跨线程使用连接
+    # FastAPI 同步端点在线程池中执行，必须关闭线程检查
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # 使查询结果可以通过列名访问
     return conn
@@ -56,6 +58,7 @@ def init_db():
     """)
 
     # ========== 2. 文档表 ==========
+    # 【修改点1】建表语句加了 file_size 和 indexed 字段
     cur.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,11 +66,27 @@ def init_db():
             content         TEXT NOT NULL,
             doc_type        TEXT,
             file_path       TEXT,
+            file_size       INTEGER DEFAULT 0,
             chunk_count     INTEGER DEFAULT 0,
+            indexed         INTEGER DEFAULT 0,
             uploaded_by     INTEGER REFERENCES users(id),
             created_at      TEXT DEFAULT (datetime('now', 'localtime'))
         );
     """)
+
+    # 【修改点2】兼容旧数据库：如果 indexed 列不存在则自动添加
+    try:
+        cur.execute("SELECT indexed FROM documents LIMIT 1")
+    except Exception:
+        cur.execute("ALTER TABLE documents ADD COLUMN indexed INTEGER DEFAULT 0")
+        logger.info("已为 documents 表添加 indexed 列")
+
+    # 【修改点3】兼容旧数据库：如果 file_size 列不存在则自动添加
+    try:
+        cur.execute("SELECT file_size FROM documents LIMIT 1")
+    except Exception:
+        cur.execute("ALTER TABLE documents ADD COLUMN file_size INTEGER DEFAULT 0")
+        logger.info("已为 documents 表添加 file_size 列")
 
     # ========== 3. 对话历史表 ==========
     cur.execute("""
@@ -122,6 +141,7 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_judge_records_user_id ON judge_records(user_id);")
 
     conn.commit()
+
     # ========== 创建默认管理员账号 ==========
     from auth.jwt_handler import hash_password
     cur.execute("SELECT id FROM users WHERE username = 'admin'")
@@ -140,7 +160,7 @@ def init_db():
     # ========== 确保管理员角色正确（兼容旧数据库）==========
     cur.execute("SELECT role FROM users WHERE username = 'admin'")
     admin_row = cur.fetchone()
-    if admin_row and admin_row["role"] != "admin":
+    if admin_row and admin_row["role"] != 'admin':
         cur.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
         conn.commit()
         logger.info("已修正 admin 用户角色为管理员")

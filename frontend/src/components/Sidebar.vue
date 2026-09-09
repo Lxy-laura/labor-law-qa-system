@@ -49,7 +49,7 @@
 <script setup>
 /**
  * 侧边栏组件
- * 根据 role 动态显示菜单（普通用户可见问答/历史/收藏，管理员可见全部）
+ * 根据 role 动态显示菜单（普通用户可见问答/历史/收藏/用户反馈，管理员可见全部）
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -74,6 +74,8 @@ const router = useRouter()
 const userStore = useUserStore()
 
 // 完整菜单列表
+// 普通用户可见：智能问答、提问历史、我的收藏、用户反馈（提交反馈+查看自己的反馈）
+// 管理员可见：全部菜单（用户反馈页面展示所有用户的反馈数据）
 const allMenus = [
   { path: '/qa', label: '智能问答', icon: ChatLineRound, requireAdmin: false },
   { path: '/history', label: '提问历史', icon: Clock, requireAdmin: false },
@@ -81,7 +83,7 @@ const allMenus = [
   { path: '/knowledge-base', label: '知识库管理', icon: Files, requireAdmin: true },
   { path: '/analytics', label: '数据分析', icon: DataAnalysis, requireAdmin: true },
   { path: '/retrieval-viz', label: '检索调试', icon: Connection, requireAdmin: true },
-  { path: '/feedback', label: '用户反馈', icon: ChatDotRound, requireAdmin: true }
+  { path: '/feedback', label: '用户反馈', icon: ChatDotRound, requireAdmin: false }
 ]
 
 // 根据角色过滤可见菜单

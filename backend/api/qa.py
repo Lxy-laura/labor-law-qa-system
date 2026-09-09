@@ -13,6 +13,33 @@ from auth.decorators import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/qa", tags=["智能问答"])
 
+
+@router.post("/debug", summary="检索调试（管理员）")
+def debug_retrieval(
+    req: QuestionRequest,
+    user: dict = Depends(require_admin)
+):
+    """
+    检索调试：展示 RAG 管线每一步的中间结果
+
+    返回数据包含：
+    - step1_query: 查询处理（分词、token 数）
+    - step2_retrieval: BM25 检索（召回文档数、耗时）
+    - step3_context: 上下文构建（Top-K 排序结果、归一化分数）
+    - step4_generation: 生成回答（LLM 输出、耗时、token 数）
+    - retrieved_docs: 检索到的文档列表（含标题、分数、内容片段）
+    """
+    try:
+        from rag.pipeline import get_pipeline
+        pipeline = get_pipeline()
+        result = pipeline.run_debug(req.question, top_k=req.top_k)
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"检索调试失败: {str(e)}")
+
+
 @router.post("/ask", summary="智能问答")
 def ask_question(
     req: QuestionRequest,
@@ -45,7 +72,9 @@ def ask_question(
         cur.close()
 
         # 直接返回 dict，不使用 response_model
+        # chat_id 用于前端提交用户反馈时关联对话记录
         return {
+            "chat_id": chat_id,
             "answer": result["answer"],
             "citations": result["citations"],
             "cases": result.get("cases", []),
@@ -58,6 +87,7 @@ def ask_question(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"问答处理失败: {str(e)}")
+
 
 @router.get("/conversations", summary="获取对话历史列表")
 def get_conversations(
@@ -89,6 +119,7 @@ def get_conversations(
 
     return conversations
 
+
 @router.get("/conversations/{conv_id}", summary="获取单个对话详情")
 def get_conversation_detail(
     conv_id: int,
@@ -108,26 +139,16 @@ def get_conversation_detail(
     if not row:
         raise HTTPException(status_code=404, detail="对话记录不存在或无权访问")
 
-    # 解析引用来源
-    citations = json.loads(row["citations"]) if row["citations"] else []
-
-    # 归一化旧数据：如果 relevance > 1，说明是旧的 BM25 原始分数，需要归一化到 0-1
-    if citations:
-        max_rel = max(c.get("relevance", 0) for c in citations)
-        if max_rel > 1:
-            for c in citations:
-                raw = c.get("relevance", 0)
-                c["relevance"] = round(raw / max_rel, 4) if max_rel > 0 else 0
-
     return {
         "id": row["id"],
         "question": row["question"],
         "answer": row["answer"],
-        "citations": citations,
+        "citations": json.loads(row["citations"]) if row["citations"] else [],
         "confidence": row["confidence"],
         "is_favorited": bool(row["is_favorited"]) if "is_favorited" in row.keys() else False,
         "created_at": row["created_at"]
     }
+
 
 @router.delete("/conversations/{conv_id}", summary="删除对话记录")
 def delete_conversation(
@@ -144,6 +165,7 @@ def delete_conversation(
     db.commit()
     cur.close()
     return {"message": "删除成功"}
+
 
 @router.post("/conversations/{conv_id}/regenerate", summary="重新生成回答")
 def regenerate_answer(
@@ -201,6 +223,7 @@ def regenerate_answer(
         "message": "回答已重新生成"
     }
 
+
 @router.post("/conversations/{conv_id}/favorite", summary="切换收藏状态")
 def toggle_favorite(
     conv_id: int,
@@ -233,6 +256,7 @@ def toggle_favorite(
 
     return {"message": "已收藏" if new_state else "已取消收藏", "is_favorited": bool(new_state)}
 
+
 @router.get("/favorites", summary="获取收藏列表")
 def get_favorites(
     db=Depends(get_db),
@@ -261,6 +285,7 @@ def get_favorites(
         })
 
     return favorites
+
 
 @router.post("/feedback", response_model=FeedbackResponse, summary="提交问答反馈")
 def submit_feedback(
@@ -291,6 +316,58 @@ def submit_feedback(
     cur.close()
 
     return FeedbackResponse(message="反馈提交成功", feedback_id=feedback_id)
+
+
+@router.get("/feedback/my", summary="获取当前用户的反馈列表")
+def get_my_feedback(
+    db=Depends(get_db),
+    user: dict = Depends(get_current_user)
+):
+    """获取当前用户自己提交的反馈列表（普通用户可见）"""
+    cur = db.cursor()
+
+    cur.execute(
+        """SELECT f.id, f.rating, f.comment, f.created_at,
+                  ch.question, ch.answer
+           FROM feedback f
+           LEFT JOIN chat_history ch ON f.chat_id = ch.id
+           WHERE f.user_id = ?
+           ORDER BY f.created_at DESC""",
+        (user["user_id"],)
+    )
+    rows = cur.fetchall()
+
+    # 评分统计
+    cur.execute(
+        """SELECT rating, COUNT(*) as count
+           FROM feedback WHERE user_id = ?
+           GROUP BY rating""",
+        (user["user_id"],)
+    )
+    stats_rows = cur.fetchall()
+    cur.close()
+
+    stats = {}
+    for srow in stats_rows:
+        stats[str(srow["rating"])] = srow["count"]
+
+    feedback_list = []
+    for row in rows:
+        feedback_list.append({
+            "id": row["id"],
+            "rating": row["rating"],
+            "comment": row["comment"],
+            "question": row["question"] if row["question"] else "",
+            "answer": row["answer"][:100] + "..." if row["answer"] and len(row["answer"]) > 100 else (row["answer"] or ""),
+            "created_at": row["created_at"]
+        })
+
+    return {
+        "list": feedback_list,
+        "total": len(feedback_list),
+        "stats": stats
+    }
+
 
 @router.get("/feedback", summary="获取反馈列表（管理员）")
 def get_feedback_list(

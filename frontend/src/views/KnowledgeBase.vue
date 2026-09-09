@@ -7,7 +7,7 @@
         <h2 class="page-title">知识库管理</h2>
         <p class="text-sm text-gray-400 mt-1">管理劳动合同法律法规知识库文档</p>
       </div>
-      <el-button type="primary" :icon="Upload" @click="uploadDialogVisible = true">
+      <el-button type="primary" :icon="Upload" @click="openUploadDialog">
         上传文档
       </el-button>
     </div>
@@ -47,11 +47,11 @@
           @clear="loadDocuments"
         />
         <el-select v-model="filterType" placeholder="文档类型" class="!w-40" clearable @change="loadDocuments">
-          <el-option label="法律法规" value="law" />
-          <el-option label="部门规章" value="regulation" />
-          <el-option label="司法解释" value="judicial" />
-          <el-option label="案例库" value="case" />
-          <el-option label="办事指南" value="guide" />
+          <el-option label="法律法规" value="法律法规" />
+          <el-option label="部门规章" value="部门规章" />
+          <el-option label="司法解释" value="司法解释" />
+          <el-option label="案例库" value="案例库" />
+          <el-option label="办事指南" value="办事指南" />
         </el-select>
         <el-button type="primary" @click="loadDocuments">查询</el-button>
         <div class="flex-1"></div>
@@ -78,8 +78,8 @@
 
         <el-table-column label="类型" width="120">
           <template #default="{ row }">
-            <el-tag size="small" :type="typeTagType(row.type)" effect="plain">
-              {{ typeLabel(row.type) }}
+            <el-tag size="small" :type="typeTagType(row.doc_type)" effect="plain">
+              {{ row.doc_type || '未分类' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -92,7 +92,7 @@
 
         <el-table-column label="向量数" width="100" align="center">
           <template #default="{ row }">
-            <span class="text-sm text-gray-500">{{ row.chunkCount || '-' }}</span>
+            <span class="text-sm text-gray-500">{{ row.chunkCount || row.chunk_count || '-' }}</span>
           </template>
         </el-table-column>
 
@@ -106,7 +106,7 @@
 
         <el-table-column label="上传时间" width="170">
           <template #default="{ row }">
-            <span class="text-sm text-gray-400">{{ row.uploadTime || row.createdAt }}</span>
+            <span class="text-sm text-gray-400">{{ row.uploadTime || row.created_at || row.createdAt }}</span>
           </template>
         </el-table-column>
 
@@ -147,9 +147,9 @@
     </div>
 
     <!-- 上传弹窗 -->
-    <el-dialog v-model="uploadDialogVisible" title="上传知识库文档" width="540px">
-      <el-form :model="uploadForm" label-width="80px">
-        <el-form-item label="文档文件" required>
+    <el-dialog v-model="uploadDialogVisible" title="上传知识库文档" width="540px" @close="resetUploadForm">
+      <el-form :model="uploadForm" label-width="80px" :rules="uploadRules" ref="uploadFormRef">
+        <el-form-item label="文档文件" prop="file">
           <div
             class="flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg py-8 cursor-pointer hover:border-primary-400 hover:bg-primary-50 transition-colors w-full"
             @click="triggerUpload"
@@ -162,16 +162,16 @@
           </div>
           <input ref="uploadInputRef" type="file" class="hidden" accept=".txt,.docx,.pdf,.md" @change="handleUploadChange" />
         </el-form-item>
-        <el-form-item label="文档标题">
+        <el-form-item label="文档标题" prop="title">
           <el-input v-model="uploadForm.title" placeholder="请输入文档标题" />
         </el-form-item>
-        <el-form-item label="文档类型">
-          <el-select v-model="uploadForm.category" placeholder="请选择类型" class="w-full">
-            <el-option label="法律法规" value="law" />
-            <el-option label="部门规章" value="regulation" />
-            <el-option label="司法解释" value="judicial" />
-            <el-option label="案例库" value="case" />
-            <el-option label="办事指南" value="guide" />
+        <el-form-item label="文档类型" prop="doc_type">
+          <el-select v-model="uploadForm.doc_type" placeholder="请选择类型" class="w-full">
+            <el-option label="法律法规" value="法律法规" />
+            <el-option label="部门规章" value="部门规章" />
+            <el-option label="司法解释" value="司法解释" />
+            <el-option label="案例库" value="案例库" />
+            <el-option label="办事指南" value="办事指南" />
           </el-select>
         </el-form-item>
         <el-form-item label="描述">
@@ -181,6 +181,34 @@
       <template #footer>
         <el-button @click="uploadDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="confirmUpload">确认上传</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 文档预览弹窗 -->
+    <el-dialog v-model="previewDialogVisible" :title="currentDocument ? currentDocument.title : '文档预览'" width="800px" class="preview-dialog">
+      <div v-loading="previewLoading">
+        <template v-if="currentDocument">
+          <!-- 文档元信息 -->
+          <div class="flex items-center gap-3 mb-4 flex-wrap">
+            <el-tag size="small" :type="typeTagType(currentDocument.doc_type)" effect="plain">
+              {{ currentDocument.doc_type || '未分类' }}
+            </el-tag>
+            <el-tag size="small" :type="currentDocument.indexed ? 'success' : 'info'" effect="plain">
+              {{ currentDocument.indexed ? '已索引' : '待索引' }}
+            </el-tag>
+            <span class="text-xs text-gray-400">分块数：{{ currentDocument.chunk_count || 0 }}</span>
+            <span class="text-xs text-gray-400">文件大小：{{ formatFileSize(currentDocument.file_size) }}</span>
+            <span class="text-xs text-gray-400">上传时间：{{ currentDocument.created_at }}</span>
+          </div>
+
+          <!-- 文档全文内容 -->
+          <div class="bg-gray-50 rounded-lg p-4 max-h-[500px] overflow-y-auto custom-scrollbar">
+            <pre class="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{{ currentDocument.content || '文档内容为空' }}</pre>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="previewDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -206,7 +234,7 @@ import {
   Folder,
   DataLine
 } from '@element-plus/icons-vue'
-import { getDocuments, uploadDocument, deleteDocument, getKbStats, rebuildIndex } from '../api/kb'
+import { getDocuments, uploadDocument, deleteDocument, getKbStats, rebuildIndex, getDocumentDetail } from '../api/kb'
 
 const tableLoading = ref(false)
 const searchKeyword = ref('')
@@ -216,12 +244,25 @@ const uploadDialogVisible = ref(false)
 const uploading = ref(false)
 const uploadFile = ref(null)
 const uploadInputRef = ref(null)
+const uploadFormRef = ref(null)
+
+// 文档预览
+const previewDialogVisible = ref(false)
+const currentDocument = ref(null)
+const previewLoading = ref(false)
 
 const uploadForm = reactive({
   title: '',
-  category: '',
+  doc_type: '法律法规',
   description: ''
 })
+
+// 表单校验规则
+const uploadRules = {
+  file: [{ required: true, message: '请选择要上传的文件', trigger: 'change' }],
+  title: [{ required: true, message: '请输入文档标题', trigger: 'blur' }],
+  doc_type: [{ required: true, message: '请选择文档类型', trigger: 'change' }]
+}
 
 const pagination = reactive({
   page: 1,
@@ -250,7 +291,7 @@ async function loadDocuments() {
       page: pagination.page,
       pageSize: pagination.pageSize,
       keyword: searchKeyword.value,
-      type: filterType.value
+      doc_type: filterType.value
     })
     documents.value = res.list || []
     pagination.total = res.total || 0
@@ -280,14 +321,16 @@ function refreshAll() {
   loadStats()
 }
 
-// 类型标签
-function typeLabel(type) {
-  const map = { law: '法律法规', regulation: '部门规章', judicial: '司法解释', case: '案例库', guide: '办事指南' }
-  return map[type] || '其他'
-}
-function typeTagType(type) {
-  const map = { law: 'danger', regulation: 'warning', judicial: 'success', case: 'info', guide: 'primary' }
-  return map[type] || 'info'
+// 类型标签样式
+function typeTagType(doc_type) {
+  const map = {
+    '法律法规': 'danger',
+    '部门规章': 'warning',
+    '司法解释': 'success',
+    '案例库': 'info',
+    '办事指南': 'primary'
+  }
+  return map[doc_type] || 'info'
 }
 
 // 格式化文件大小
@@ -298,9 +341,20 @@ function formatFileSize(size) {
   return (size / (1024 * 1024)).toFixed(1) + 'MB'
 }
 
-// 预览文档
-function previewDoc(row) {
-  ElMessage.info(`预览文档：${row.title}`)
+// 预览文档 - 调用 API 获取全文内容，在弹窗中展示
+async function previewDoc(row) {
+  previewLoading.value = true
+  previewDialogVisible.value = true
+  currentDocument.value = null
+  try {
+    const res = await getDocumentDetail(row.id)
+    currentDocument.value = res
+  } catch (error) {
+    ElMessage.error('预览文档失败：' + (error.message || '未知错误'))
+    previewDialogVisible.value = false
+  } finally {
+    previewLoading.value = false
+  }
 }
 
 // 重建索引
@@ -335,6 +389,12 @@ async function removeDoc(row) {
   }
 }
 
+// 打开上传弹窗
+function openUploadDialog() {
+  resetUploadForm()
+  uploadDialogVisible.value = true
+}
+
 // 触发上传文件选择
 function triggerUpload() {
   uploadInputRef.value?.click()
@@ -361,11 +421,20 @@ async function confirmUpload() {
     ElMessage.warning('请选择要上传的文件')
     return
   }
+  if (!uploadForm.title) {
+    ElMessage.warning('请输入文档标题')
+    return
+  }
+  if (!uploadForm.doc_type) {
+    ElMessage.warning('请选择文档类型')
+    return
+  }
+
   uploading.value = true
   try {
     await uploadDocument(uploadFile.value, {
       title: uploadForm.title,
-      category: uploadForm.category,
+      doc_type: uploadForm.doc_type,
       description: uploadForm.description
     })
     ElMessage.success('上传成功')
@@ -374,7 +443,7 @@ async function confirmUpload() {
     loadDocuments()
     loadStats()
   } catch (e) {
-    // 错误已处理
+    // 错误已由拦截器处理
   } finally {
     uploading.value = false
   }
@@ -384,7 +453,7 @@ async function confirmUpload() {
 function resetUploadForm() {
   uploadFile.value = null
   uploadForm.title = ''
-  uploadForm.category = ''
+  uploadForm.doc_type = '法律法规'
   uploadForm.description = ''
   if (uploadInputRef.value) uploadInputRef.value.value = ''
 }

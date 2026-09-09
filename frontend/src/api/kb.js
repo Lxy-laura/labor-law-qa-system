@@ -6,7 +6,7 @@ import request from './index'
 
 /**
  * 获取文档列表
- * @param {Object} params - { page, pageSize, keyword, type }
+ * @param {Object} params - { page, pageSize, keyword, doc_type }
  * @returns {Promise} - { list, total, page, pageSize }
  */
 export function getDocuments(params) {
@@ -20,7 +20,7 @@ export function getDocuments(params) {
 /**
  * 上传文档到知识库
  * @param {File} file
- * @param {Object} metadata - { title, category, description }
+ * @param {Object} metadata - { title, doc_type, description }
  * @param {Function} onUploadProgress
  * @returns {Promise}
  */
@@ -33,10 +33,14 @@ export function uploadDocument(file, metadata, onUploadProgress) {
     })
   }
   return request({
-    url: '/kb/documents',
+    url: '/kb/upload',
     method: 'post',
     data: formData,
-    headers: { 'Content-Type': 'multipart/form-data' },
+    // 不要手动设置 Content-Type，让浏览器自动添加 boundary 参数
+    // 手动设置会导致 boundary 丢失，服务器无法解析 FormData
+    headers: { 'Content-Type': undefined },
+    // OCR 处理扫描件 PDF 较慢，设为 5 分钟超时
+    timeout: 300000,
     onUploadProgress
   })
 }
@@ -60,6 +64,18 @@ export function deleteDocument(documentId) {
 export function getKbStats() {
   return request({
     url: '/kb/stats',
+    method: 'get'
+  })
+}
+
+/**
+ * 获取文档详情（含全文内容，用于预览）
+ * @param {number} documentId
+ * @returns {Promise} - { id, title, content, doc_type, file_size, chunk_count, indexed, created_at }
+ */
+export function getDocumentDetail(documentId) {
+  return request({
+    url: `/kb/documents/${documentId}`,
     method: 'get'
   })
 }
